@@ -5,7 +5,7 @@ WORKDIR /app
 # Install Python and system deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 python3-pip python3.11-venv \
-    ffmpeg git \
+    git \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3.11 /usr/bin/python \
     && ln -sf /usr/bin/python3.11 /usr/bin/python3
