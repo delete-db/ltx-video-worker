@@ -1,0 +1,11 @@
+{
+  "input": {
+    "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Camponotus_flavomarginatus_ant.jpg/320px-Camponotus_flavomarginatus_ant.jpg",
+    "prompt": "gentle camera zoom in, subtle motion, cinematic",
+    "num_frames": 49,
+    "width": 512,
+    "height": 768,
+    "num_inference_steps": 20,
+    "guidance_scale": 3.5
+  }
+}
