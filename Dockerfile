@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
 
 WORKDIR /app
 
@@ -10,9 +10,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/python3.11 /usr/bin/python \
     && ln -sf /usr/bin/python3.11 /usr/bin/python3
 
-# Install PyTorch 2.6+ (required by latest diffusers)
+# Install PyTorch 2.11.0 with CUDA 12.8
 RUN pip install --no-cache-dir \
-    torch torchvision --index-url https://download.pytorch.org/whl/cu124
+    torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
 
 # Install other dependencies
 COPY requirements.txt .
