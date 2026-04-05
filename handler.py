@@ -55,6 +55,13 @@ spatial_upscaler_path = hf_hub_download(
     cache_dir=CACHE_DIR,
 )
 
+print("Downloading Gemma 3 text encoder...")
+from huggingface_hub import snapshot_download
+gemma_root = snapshot_download(
+    repo_id="google/gemma-3-12b-it-qat-q4_0-unquantized",
+    cache_dir=CACHE_DIR,
+)
+
 from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
 
 distilled_lora = [
@@ -70,6 +77,7 @@ pipeline = TI2VidTwoStagesPipeline(
     checkpoint_path=checkpoint_path,
     distilled_lora=distilled_lora,
     spatial_upsampler_path=spatial_upscaler_path,
+    gemma_root=gemma_root,
     loras=[],
 )
 
