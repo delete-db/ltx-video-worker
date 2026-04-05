@@ -1,24 +1,38 @@
-FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
 
 WORKDIR /app
 
-# Install Python and system deps
+# Install Python 3.12 + system deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 python3-pip python3.11-venv \
-    git \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 python3.12-venv python3.12-dev \
+    git curl ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/python3.11 /usr/bin/python \
-    && ln -sf /usr/bin/python3.11 /usr/bin/python3
+    && ln -sf /usr/bin/python3.12 /usr/bin/python \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python3
 
-# Install PyTorch 2.11.0 with CUDA 12.8
-RUN pip install --no-cache-dir \
-    torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
+# Install pip for Python 3.12
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12
 
-# Install other dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install uv (fast Python package manager)
+RUN pip install uv
 
-# Copy handler
-COPY handler.py .
+# Clone LTX-2 repo
+RUN git clone https://github.com/Lightricks/LTX-2.git /app/ltx2
 
-CMD ["python", "-u", "handler.py"]
+# Install LTX-2 dependencies
+WORKDIR /app/ltx2
+RUN uv sync
+
+# Install runpod + extra deps in the same venv
+RUN . .venv/bin/activate && pip install runpod requests Pillow
+
+# Copy our handler
+COPY handler.py /app/handler.py
+
+WORKDIR /app
+
+# Run handler using the LTX-2 venv
+CMD ["/app/ltx2/.venv/bin/python", "-u", "/app/handler.py"]
