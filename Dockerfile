@@ -5,6 +5,7 @@ WORKDIR /app
 # Install Python 3.12 + system deps
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
+ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 RUN apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common \
     && add-apt-repository ppa:deadsnakes/ppa \
@@ -28,8 +29,8 @@ RUN git clone https://github.com/Lightricks/LTX-2.git /app/ltx2
 WORKDIR /app/ltx2
 RUN uv sync
 
-# Install runpod + extra deps into the LTX-2 venv using uv
-RUN uv pip install --python /app/ltx2/.venv/bin/python runpod requests Pillow
+# Install runpod + extra deps into the LTX-2 venv
+RUN uv pip install --python /app/ltx2/.venv/bin/python runpod requests Pillow huggingface_hub
 
 # Copy our handler
 COPY handler.py /app/handler.py
