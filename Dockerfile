@@ -3,6 +3,8 @@ FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
 WORKDIR /app
 
 # Install Python 3.12 + system deps
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
 RUN apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common \
     && add-apt-repository ppa:deadsnakes/ppa \
