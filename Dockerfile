@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install PyTorch 2.6+ (required by latest diffusers)
 RUN pip install --no-cache-dir \
-    torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+    torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
 # Install other dependencies
 COPY requirements.txt .
