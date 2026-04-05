@@ -83,6 +83,7 @@ print("Initializing LTX-2.3 pipeline...")
 from ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline, ImageConditioningInput
 from ltx_core.components.guiders import MultiModalGuiderParams
 from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
+from ltx_core.video_utils import encode_video
 
 distilled_lora = [
     LoraPathStrengthAndSDOps(
@@ -191,12 +192,10 @@ def handler(job):
     )
 
     try:
-        # Set memory allocation strategy
-        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-
-        pipeline(
+        # Generate video frames
+        video_frames_iter, audio = pipeline(
             prompt=prompt,
-            output_path=output_path,
+            negative_prompt="",
             seed=seed,
             height=height,
             width=width,
@@ -206,10 +205,18 @@ def handler(job):
             video_guider_params=video_guider_params,
             audio_guider_params=audio_guider_params,
             images=[ImageConditioningInput(temp_img_path, 0, 1.0, 33)],
-            generate_audio=False,
         )
+
+        # Collect all frames
+        all_frames = []
+        for frame_batch in video_frames_iter:
+            all_frames.append(frame_batch)
+        video_tensor = torch.cat(all_frames, dim=0) if len(all_frames) > 1 else all_frames[0]
+
+        # Encode to MP4
+        encode_video(video_tensor, output_path, frame_rate)
+
     except Exception as e:
-        # Cleanup on error
         if os.path.exists(temp_img_path):
             os.unlink(temp_img_path)
         if os.path.exists(output_path):
