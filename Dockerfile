@@ -28,8 +28,8 @@ RUN git clone https://github.com/Lightricks/LTX-2.git /app/ltx2
 WORKDIR /app/ltx2
 RUN uv sync
 
-# Install runpod + extra deps in the same venv
-RUN . .venv/bin/activate && pip install runpod requests Pillow
+# Install runpod + extra deps directly into the LTX-2 venv
+RUN /app/ltx2/.venv/bin/pip install runpod requests Pillow
 
 # Copy our handler
 COPY handler.py /app/handler.py
