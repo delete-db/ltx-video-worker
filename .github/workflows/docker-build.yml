@@ -21,4 +21,6 @@ jobs:
         with:
           context: .
           push: true
-          tags: bochocho/ltx23-runpod-worker:cu124
+          tags: |
+            bochocho/ltx23-runpod-worker:cu124
+            bochocho/ltx23-runpod-worker:build-${{ github.run_number }}
