@@ -17,6 +17,7 @@ COMFY_HOST = os.environ.get("COMFY_HOST", "127.0.0.1")
 COMFY_PORT = int(os.environ.get("COMFY_PORT", "8188"))
 COMFY_URL = f"http://{COMFY_HOST}:{COMFY_PORT}"
 COMFY_OUTPUT_DIR = Path(os.environ.get("COMFY_OUTPUT_DIR", "/workspace/ComfyUI/output"))
+COMFY_INPUT_DIR = Path(os.environ.get("COMFY_INPUT_DIR", "/workspace/ComfyUI/input"))
 
 WORKFLOW_DIR = Path(os.environ.get("WORKFLOW_DIR", "/app/workflows"))
 T2V_WORKFLOW_PATH = Path(
@@ -65,9 +66,10 @@ def load_workflow(mode: str) -> dict[str, Any]:
 
 
 def write_temp_image_from_input(image_input: str) -> str:
-    temp_file = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-    temp_path = temp_file.name
-    temp_file.close()
+    """Save input image to ComfyUI's input directory and return just the filename."""
+    COMFY_INPUT_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"input_{int(time.time())}_{os.getpid()}.png"
+    save_path = COMFY_INPUT_DIR / filename
 
     try:
         if image_input.startswith("http://") or image_input.startswith("https://"):
@@ -78,11 +80,11 @@ def write_temp_image_from_input(image_input: str) -> str:
             payload = image_input.split(",", 1)[1] if "," in image_input else image_input
             image = Image.open(io.BytesIO(base64.b64decode(payload))).convert("RGB")
 
-        image.save(temp_path)
-        return temp_path
+        image.save(str(save_path))
+        return filename  # ComfyUI LoadImage expects just the filename
     except Exception:
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
+        if save_path.exists():
+            save_path.unlink()
         raise
 
 
@@ -111,13 +113,7 @@ def build_template_values(job_input: dict[str, Any]) -> dict[str, str]:
 
     negative_prompt = job_input.get("negative_prompt", "").strip()
     seed = int(job_input.get("seed", 42))
-    stage1_steps = int(job_input.get("stage1_steps", 30))
-    stage2_steps = int(job_input.get("stage2_steps", 6))
     cfg = float(job_input.get("cfg", 3.0))
-    stg_scale = float(job_input.get("stg_scale", 1.0))
-    stg_blocks = job_input.get("stg_blocks", "14,19")
-    sampler = job_input.get("sampler", "euler")
-    scheduler = job_input.get("scheduler", "simple")
     filename_prefix = job_input.get("filename_prefix", f"ltx23_{mode}")
 
     values = {
@@ -128,13 +124,7 @@ def build_template_values(job_input: dict[str, Any]) -> dict[str, str]:
         "NUM_FRAMES": str(num_frames),
         "FPS": str(fps),
         "SEED": str(seed),
-        "STAGE1_STEPS": str(stage1_steps),
-        "STAGE2_STEPS": str(stage2_steps),
         "CFG": str(cfg),
-        "STG_SCALE": str(stg_scale),
-        "STG_BLOCKS": str(stg_blocks),
-        "SAMPLER": sampler,
-        "SCHEDULER": scheduler,
         "FILENAME_PREFIX": filename_prefix,
     }
 
@@ -243,9 +233,11 @@ def resolve_output_path(filename: str, subfolder: str) -> Path:
 
 
 def cleanup_temp_inputs(replacements: dict[str, str]) -> None:
-    image_path = replacements.get("IMAGE_PATH")
-    if image_path and os.path.exists(image_path):
-        os.unlink(image_path)
+    image_filename = replacements.get("IMAGE_PATH")
+    if image_filename:
+        full_path = COMFY_INPUT_DIR / image_filename
+        if full_path.exists():
+            full_path.unlink()
 
 
 wait_for_comfyui()

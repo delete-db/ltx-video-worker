@@ -6,11 +6,11 @@
     }
   },
   "2": {
-    "class_type": "LoraLoaderModelOnly",
+    "class_type": "LTXVGemmaCLIPModelLoader",
     "inputs": {
-      "model": ["1", 0],
-      "lora_name": "ltx-2.3-22b-distilled-lora-384.safetensors",
-      "strength_model": 0.5
+      "gemma_path": "gemma_3_12B_it_fp4_mixed.safetensors",
+      "ltxv_path": "ltx-2.3-22b-dev.safetensors",
+      "max_length": 1024
     }
   },
   "3": {
@@ -19,17 +19,25 @@
       "model_name": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
     }
   },
+  "4": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": ["1", 0],
+      "lora_name": "ltx-2.3-22b-distilled-lora-384.safetensors",
+      "strength_model": 0.5
+    }
+  },
   "10": {
     "class_type": "CLIPTextEncode",
     "inputs": {
-      "clip": ["1", 1],
+      "clip": ["2", 0],
       "text": "{{PROMPT}}"
     }
   },
   "11": {
     "class_type": "CLIPTextEncode",
     "inputs": {
-      "clip": ["1", 1],
+      "clip": ["2", 0],
       "text": "{{NEGATIVE_PROMPT}}"
     }
   },
@@ -68,10 +76,10 @@
   "40": {
     "class_type": "CFGGuider",
     "inputs": {
-      "model": ["2", 0],
+      "model": ["1", 0],
       "positive": ["20", 0],
       "negative": ["20", 1],
-      "cfg": 1.0
+      "cfg": "{{CFG}}"
     }
   },
   "41": {
@@ -126,7 +134,7 @@
   "60": {
     "class_type": "CFGGuider",
     "inputs": {
-      "model": ["2", 0],
+      "model": ["4", 0],
       "positive": ["20", 0],
       "negative": ["20", 1],
       "cfg": 1.0
