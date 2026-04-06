@@ -175,6 +175,15 @@ def queue_prompt(prompt: dict[str, Any]) -> str:
     return prompt_id
 
 
+def fetch_object_info(node_class: str | None = None) -> dict[str, Any]:
+    response = requests.get(f"{COMFY_URL}/object_info", timeout=30)
+    response.raise_for_status()
+    payload = response.json()
+    if node_class:
+        return {node_class: payload.get(node_class)}
+    return payload
+
+
 def wait_for_history(prompt_id: str) -> dict[str, Any]:
     deadline = time.time() + REQUEST_TIMEOUT_SEC
     last_payload = None
@@ -246,8 +255,15 @@ wait_for_comfyui()
 def handler(job: dict[str, Any]) -> dict[str, Any]:
     job_input = job.get("input", {})
     mode = job_input.get("mode", "t2v").lower()
+    if mode == "object_info":
+        try:
+            node_class = job_input.get("node_class")
+            return fetch_object_info(node_class)
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)}
+
     if mode not in {"t2v", "i2v"}:
-        return {"error": "Invalid mode. Supported values: t2v, i2v"}
+        return {"error": "Invalid mode. Supported values: t2v, i2v, object_info"}
 
     replacements = {}
     try:
