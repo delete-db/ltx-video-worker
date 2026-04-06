@@ -190,6 +190,14 @@ def fetch_object_info(node_class: str | None = None) -> dict[str, Any]:
     return payload
 
 
+def build_rendered_prompt(job_input: dict[str, Any]) -> tuple[dict[str, Any], str, dict[str, str]]:
+    mode = job_input.get("mode", "t2v").lower()
+    workflow, workflow_path = load_workflow(mode)
+    replacements = build_template_values(job_input)
+    prompt = render_template(copy.deepcopy(workflow), replacements)
+    return prompt, workflow_path, replacements
+
+
 def wait_for_history(prompt_id: str) -> dict[str, Any]:
     deadline = time.time() + REQUEST_TIMEOUT_SEC
     last_payload = None
@@ -269,14 +277,35 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc)}
 
+    if mode == "rendered_workflow":
+        try:
+            workflow_mode = job_input.get("workflow_mode", "t2v").lower()
+            debug_input = dict(job_input)
+            debug_input["mode"] = workflow_mode
+            prompt, workflow_path, replacements = build_rendered_prompt(debug_input)
+            node_ids = job_input.get("node_ids")
+            if node_ids:
+                filtered = {str(node_id): prompt.get(str(node_id)) for node_id in node_ids}
+                return {
+                    "workflow_path": workflow_path,
+                    "node_ids": [str(node_id) for node_id in node_ids],
+                    "prompt": filtered,
+                    "replacements": replacements,
+                }
+            return {
+                "workflow_path": workflow_path,
+                "prompt": prompt,
+                "replacements": replacements,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)}
+
     if mode not in {"t2v", "i2v"}:
-        return {"error": "Invalid mode. Supported values: t2v, i2v, object_info"}
+        return {"error": "Invalid mode. Supported values: t2v, i2v, object_info, rendered_workflow"}
 
     replacements = {}
     try:
-        workflow, workflow_path = load_workflow(mode)
-        replacements = build_template_values(job_input)
-        prompt = render_template(copy.deepcopy(workflow), replacements)
+        prompt, workflow_path, replacements = build_rendered_prompt(job_input)
         print(f"Using workflow path: {workflow_path}")
         print(f"Rendered node 80: {json.dumps(prompt.get('80'), ensure_ascii=True)[:2000]}")
         print(f"Rendered node 81: {json.dumps(prompt.get('81'), ensure_ascii=True)[:2000]}")
