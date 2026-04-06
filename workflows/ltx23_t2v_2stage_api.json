@@ -198,7 +198,7 @@
     "class_type": "LTXVAudioVAEDecode",
     "inputs": {
       "samples": ["70", 1],
-      "vae": ["72", 0]
+      "audio_vae": ["72", 0]
     }
   },
   "80": {
