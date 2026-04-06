@@ -5,8 +5,8 @@ This worker is designed for `LTX-2.3` on `RunPod Serverless` using `ComfyUI`, wi
 - two-stage `text-to-video`
 - two-stage `image-to-video`
 - `dev` checkpoint workflows
-- `STG` placeholders
-- low-VRAM loading via your chosen ComfyUI workflow
+- `VHS_VideoCombine` mp4 output
+- API debug modes for node schema and rendered workflow inspection
 
 ## Important
 
@@ -26,7 +26,7 @@ Create two workflows in ComfyUI:
 
 Export each workflow in API format and replace the placeholder JSON files in `workflows/`.
 
-## Placeholder Tokens
+## Placeholder Tokens Currently Used
 
 Keep these literal placeholders in the exported workflow values where appropriate:
 
@@ -37,25 +37,25 @@ Keep these literal placeholders in the exported workflow values where appropriat
 - `{{NUM_FRAMES}}`
 - `{{FPS}}`
 - `{{SEED}}`
-- `{{STAGE1_STEPS}}`
-- `{{STAGE2_STEPS}}`
 - `{{CFG}}`
-- `{{STG_SCALE}}`
-- `{{STG_BLOCKS}}`
-- `{{SAMPLER}}`
-- `{{SCHEDULER}}`
 - `{{FILENAME_PREFIX}}`
 - `{{IMAGE_PATH}}` for image-to-video only
 
-## Recommended Workflow Shape
+## Current Workflow Shape
 
-For your requested setup, use:
+The checked-in workflows currently use:
+
+- `CheckpointLoaderSimple`
+- `ltx-2.3-22b-dev.safetensors`
+- `LTXVLatentUpsampler`
+- `VHS_VideoCombine` with `video/h264-mp4`
+
+These workflows do not currently use:
 
 - `LowVRAMCheckpointLoader`
-- `ltx-2.3-22b-dev.safetensors`
 - `LTXVApplySTG`
-- `LTXVLatentUpsampler`
-- save node that outputs `mp4`
+- request-driven sampler/scheduler placeholders
+- request-driven stage step placeholders
 
 ## Request Contract
 
@@ -72,13 +72,7 @@ For your requested setup, use:
     "duration_seconds": 4,
     "fps": 25,
     "seed": 42,
-    "stage1_steps": 30,
-    "stage2_steps": 6,
     "cfg": 3.0,
-    "stg_scale": 1.0,
-    "stg_blocks": "14,19",
-    "sampler": "euler",
-    "scheduler": "simple",
     "filename_prefix": "ltx23_t2v"
   }
 }
@@ -98,13 +92,7 @@ For your requested setup, use:
     "duration_seconds": 4,
     "fps": 25,
     "seed": 42,
-    "stage1_steps": 30,
-    "stage2_steps": 6,
     "cfg": 3.0,
-    "stg_scale": 1.0,
-    "stg_blocks": "14,19",
-    "sampler": "euler",
-    "scheduler": "simple",
     "filename_prefix": "ltx23_i2v"
   }
 }
@@ -122,6 +110,16 @@ The handler returns:
 - `output_path`
 - `video_base64` when `RETURN_BASE64=true`
 
+## Debug Modes
+
+The worker also supports these non-generation modes:
+
+- `object_info`
+  - returns ComfyUI node schema for a specific `node_class`, or the full object info payload
+- `rendered_workflow`
+  - returns the rendered prompt JSON after placeholder replacement
+  - supports optional `node_ids` filtering
+
 ## Model Storage
 
 On RunPod, attach a network volume and put ComfyUI models under:
@@ -136,5 +134,5 @@ Recommended files:
 - `ltx-2.3-22b-dev.safetensors`
 - `ltx-2.3-22b-dev-fp8.safetensors` as fallback
 - `ltx-2.3-22b-distilled-lora-384.safetensors` if your chosen two-stage workflow uses the official LoRA refinement
-- `ltx-2.3-spatial-upscaler-x2-1.0.safetensors`
+- `ltx-2.3-spatial-upscaler-x2-1.1.safetensors`
 - `gemma_3_12B_it_fp4_mixed.safetensors`
