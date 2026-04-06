@@ -1,9 +1,9 @@
 """
 RunPod Serverless Handler for LTX-2.3 Image-to-Video Generation.
-Uses the official ltx-pipelines package (TI2VidTwoStagesPipeline).
+Uses the official DistilledPipeline for memory-efficient inference on RTX 6000 Ada 48GB.
 
 Requirements:
-- NVIDIA GPU with 32GB+ VRAM (A40 48GB recommended)
+- NVIDIA GPU with 48GB VRAM (RTX 6000 Ada)
 - CUDA 12.7+
 - Python 3.12
 - HF_TOKEN env var for Gemma model download (requires license acceptance)
@@ -44,18 +44,10 @@ else:
 
 from huggingface_hub import hf_hub_download, snapshot_download
 
-print("Downloading LTX-2.3 checkpoint...")
+print("Downloading LTX-2.3 distilled checkpoint...")
 checkpoint_path = hf_hub_download(
     repo_id=HF_MODEL,
     filename="ltx-2.3-22b-distilled.safetensors",
-    cache_dir=CACHE_DIR,
-    token=hf_token,
-)
-
-print("Downloading distilled LoRA...")
-distilled_lora_path = hf_hub_download(
-    repo_id=HF_MODEL,
-    filename="ltx-2.3-22b-distilled-lora-384.safetensors",
     cache_dir=CACHE_DIR,
     token=hf_token,
 )
@@ -78,42 +70,30 @@ print(f"Gemma downloaded to: {gemma_root}")
 
 # ── Initialize Pipeline ─────────────────────────────────────
 
-print("Initializing LTX-2.3 pipeline...")
+print("Initializing LTX-2.3 DistilledPipeline...")
 
-from ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline
+from ltx_pipelines.distilled import DistilledPipeline
 from ltx_pipelines.utils.args import ImageConditioningInput
 from ltx_pipelines.utils.media_io import encode_video
-from ltx_core.components.guiders import MultiModalGuiderParams
-from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
 from ltx_core.model.video_vae import get_video_chunks_number
+from ltx_core.quantization import QuantizationPolicy
+from ltx_core.loader.registry import StateDictRegistry
 
-distilled_lora = [
-    LoraPathStrengthAndSDOps(
-        distilled_lora_path,
-        0.6,
-        LTXV_LORA_COMFY_RENAMING_MAP,
-    ),
-]
+quantization = QuantizationPolicy.fp8_cast()
+print("Using FP8 quantization")
 
-# Use FP8 quantization to fit on A40 48GB
-try:
-    from ltx_core.quantization import QuantizationPolicy
-    quantization = QuantizationPolicy.fp8_cast()
-    print("Using FP8 quantization for A40 compatibility")
-except Exception as e:
-    print(f"FP8 quantization not available: {e}, using default precision")
-    quantization = None
+registry = StateDictRegistry()
 
-pipeline = TI2VidTwoStagesPipeline(
-    checkpoint_path=checkpoint_path,
-    distilled_lora=distilled_lora,
+pipeline = DistilledPipeline(
+    distilled_checkpoint_path=checkpoint_path,
     spatial_upsampler_path=spatial_upscaler_path,
     gemma_root=gemma_root,
     loras=[],
     quantization=quantization,
+    registry=registry,
 )
 
-print("LTX-2.3 pipeline ready!")
+print("LTX-2.3 DistilledPipeline ready!")
 
 
 # ── Helper Functions ─────────────────────────────────────────
@@ -163,53 +143,32 @@ def handler(job):
     num_frames = job_input.get("num_frames", 97)      # ~3.8 sec at 25fps
     width = job_input.get("width", 768)
     height = job_input.get("height", 1344)
-    num_inference_steps = job_input.get("num_inference_steps", 8)  # 8 for distilled
     seed = job_input.get("seed", 42)
     frame_rate = job_input.get("frame_rate", 25.0)
 
-    # Ensure dimensions divisible by 32, frames by 8+1
-    width = (width // 32) * 32
-    height = (height // 32) * 32
+    # Two-stage pipeline requires dimensions divisible by 64, frames by 8+1
+    width = (width // 64) * 64
+    height = (height // 64) * 64
     num_frames = ((num_frames - 1) // 8) * 8 + 1
 
-    print(f"Generating: {width}x{height}, {num_frames} frames, {num_inference_steps} steps, seed={seed}")
+    print(f"Generating: {width}x{height}, {num_frames} frames, seed={seed}")
 
     output_path = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
 
-    # Guider params for DISTILLED model (cfg_scale=1.0, stg disabled)
-    video_guider_params = MultiModalGuiderParams(
-        cfg_scale=1.0,
-        stg_scale=0.0,
-        rescale_scale=0.0,
-        modality_scale=1.0,
-        stg_blocks=[],
-    )
-
-    audio_guider_params = MultiModalGuiderParams(
-        cfg_scale=1.0,
-        stg_scale=0.0,
-        rescale_scale=0.0,
-        modality_scale=1.0,
-        stg_blocks=[],
-    )
-
     try:
-        # Generate video frames
+        # Generate video frames (DistilledPipeline uses fixed 8+4 sigma steps)
         video_frames_iter, audio = pipeline(
             prompt=prompt,
-            negative_prompt="",
             seed=seed,
             height=height,
             width=width,
             num_frames=num_frames,
             frame_rate=frame_rate,
-            num_inference_steps=num_inference_steps,
-            video_guider_params=video_guider_params,
-            audio_guider_params=audio_guider_params,
             images=[ImageConditioningInput(temp_img_path, 0, 1.0, 33)],
+            streaming_prefetch_count=2,
         )
 
-        # Encode to MP4 (pass iterator directly — encode_video handles streaming)
+        # Encode to MP4
         video_chunks_number = get_video_chunks_number(num_frames)
         encode_video(
             video=video_frames_iter,

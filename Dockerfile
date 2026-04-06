@@ -5,7 +5,7 @@ WORKDIR /app
 # Install Python 3.12 + system deps
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
-ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+ENV PYTORCH_ALLOC_CONF=expandable_segments:True
 RUN apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common \
     && add-apt-repository ppa:deadsnakes/ppa \
