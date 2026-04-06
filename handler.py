@@ -1,12 +1,14 @@
 """
 RunPod Serverless Handler for LTX-2.3 Image-to-Video Generation.
-Uses the official DistilledPipeline for memory-efficient inference on RTX 6000 Ada 48GB.
+Uses TI2VidTwoStagesPipeline with the full dev model for cinematic quality.
 
-Requirements:
-- NVIDIA GPU with 48GB VRAM (RTX 6000 Ada)
-- CUDA 12.7+
-- Python 3.12
-- HF_TOKEN env var for Gemma model download (requires license acceptance)
+Pipeline: stage 1 generates at half resolution with CFG+STG guidance (30 steps),
+stage 2 upsamples 2x and refines with distilled LoRA (4 steps).
+
+Memory strategy for RTX 6000 Ada 48GB:
+- FP8 quantization (~22GB model weights instead of ~44GB)
+- Layer streaming (transformer layers stay on CPU, stream to GPU on demand)
+- StateDictRegistry (shared weights between stage 1 and stage 2)
 """
 
 import os
@@ -44,10 +46,18 @@ else:
 
 from huggingface_hub import hf_hub_download, snapshot_download
 
-print("Downloading LTX-2.3 distilled checkpoint...")
+print("Downloading LTX-2.3 dev checkpoint...")
 checkpoint_path = hf_hub_download(
     repo_id=HF_MODEL,
-    filename="ltx-2.3-22b-distilled.safetensors",
+    filename="ltx-2.3-22b-dev.safetensors",
+    cache_dir=CACHE_DIR,
+    token=hf_token,
+)
+
+print("Downloading distilled LoRA (for stage 2 refinement)...")
+distilled_lora_path = hf_hub_download(
+    repo_id=HF_MODEL,
+    filename="ltx-2.3-22b-distilled-lora-384.safetensors",
     cache_dir=CACHE_DIR,
     token=hf_token,
 )
@@ -70,11 +80,13 @@ print(f"Gemma downloaded to: {gemma_root}")
 
 # ── Initialize Pipeline ─────────────────────────────────────
 
-print("Initializing LTX-2.3 DistilledPipeline...")
+print("Initializing LTX-2.3 TI2VidTwoStagesPipeline (dev model)...")
 
-from ltx_pipelines.distilled import DistilledPipeline
+from ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline
 from ltx_pipelines.utils.args import ImageConditioningInput
 from ltx_pipelines.utils.media_io import encode_video
+from ltx_core.components.guiders import MultiModalGuiderParams
+from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
 from ltx_core.model.video_vae import get_video_chunks_number
 from ltx_core.quantization import QuantizationPolicy
 from ltx_core.loader.registry import StateDictRegistry
@@ -84,8 +96,17 @@ print("Using FP8 quantization")
 
 registry = StateDictRegistry()
 
-pipeline = DistilledPipeline(
-    distilled_checkpoint_path=checkpoint_path,
+distilled_lora = [
+    LoraPathStrengthAndSDOps(
+        distilled_lora_path,
+        0.6,
+        LTXV_LORA_COMFY_RENAMING_MAP,
+    ),
+]
+
+pipeline = TI2VidTwoStagesPipeline(
+    checkpoint_path=checkpoint_path,
+    distilled_lora=distilled_lora,
     spatial_upsampler_path=spatial_upscaler_path,
     gemma_root=gemma_root,
     loras=[],
@@ -93,7 +114,42 @@ pipeline = DistilledPipeline(
     registry=registry,
 )
 
-print("LTX-2.3 DistilledPipeline ready!")
+print("LTX-2.3 pipeline ready!")
+
+# ── Official LTX-2.3 recommended guider params ──────────────
+
+# From ltx_pipelines.utils.constants.LTX_2_3_PARAMS
+VIDEO_GUIDER_PARAMS = MultiModalGuiderParams(
+    cfg_scale=3.0,
+    stg_scale=1.0,
+    rescale_scale=0.7,
+    modality_scale=3.0,
+    skip_step=0,
+    stg_blocks=[28],
+)
+
+AUDIO_GUIDER_PARAMS = MultiModalGuiderParams(
+    cfg_scale=7.0,
+    stg_scale=1.0,
+    rescale_scale=0.7,
+    modality_scale=3.0,
+    skip_step=0,
+    stg_blocks=[28],
+)
+
+DEFAULT_NEGATIVE_PROMPT = (
+    "blurry, out of focus, overexposed, underexposed, low contrast, washed out colors, excessive noise, "
+    "grainy texture, poor lighting, flickering, motion blur, distorted proportions, unnatural skin tones, "
+    "deformed facial features, asymmetrical face, missing facial features, extra limbs, disfigured hands, "
+    "wrong hand count, artifacts around text, inconsistent perspective, camera shake, incorrect depth of "
+    "field, background too sharp, background clutter, distracting reflections, harsh shadows, inconsistent "
+    "lighting direction, color banding, cartoonish rendering, 3D CGI look, unrealistic materials, uncanny "
+    "valley effect, incorrect ethnicity, wrong gender, exaggerated expressions, wrong gaze direction, "
+    "mismatched lip sync, silent or muted audio, distorted voice, robotic voice, echo, background noise, "
+    "off-sync audio, incorrect dialogue, added dialogue, repetitive speech, jittery movement, awkward "
+    "pauses, incorrect timing, unnatural transitions, inconsistent framing, tilted camera, flat lighting, "
+    "inconsistent tone, cinematic oversaturation, stylized filters, or AI artifacts."
+)
 
 
 # ── Helper Functions ─────────────────────────────────────────
@@ -140,9 +196,11 @@ def handler(job):
 
     # Parameters with sensible defaults
     prompt = job_input.get("prompt", "gentle camera movement, subtle motion")
+    negative_prompt = job_input.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
     num_frames = job_input.get("num_frames", 97)      # ~3.8 sec at 25fps
     width = job_input.get("width", 768)
     height = job_input.get("height", 1344)
+    num_inference_steps = job_input.get("num_inference_steps", 30)  # LTX-2.3 default
     seed = job_input.get("seed", 42)
     frame_rate = job_input.get("frame_rate", 25.0)
 
@@ -151,19 +209,22 @@ def handler(job):
     height = (height // 64) * 64
     num_frames = ((num_frames - 1) // 8) * 8 + 1
 
-    print(f"Generating: {width}x{height}, {num_frames} frames, seed={seed}")
+    print(f"Generating: {width}x{height}, {num_frames} frames, {num_inference_steps} steps, seed={seed}")
 
     output_path = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
 
     try:
-        # Generate video frames (DistilledPipeline uses fixed 8+4 sigma steps)
         video_frames_iter, audio = pipeline(
             prompt=prompt,
+            negative_prompt=negative_prompt,
             seed=seed,
             height=height,
             width=width,
             num_frames=num_frames,
             frame_rate=frame_rate,
+            num_inference_steps=num_inference_steps,
+            video_guider_params=VIDEO_GUIDER_PARAMS,
+            audio_guider_params=AUDIO_GUIDER_PARAMS,
             images=[ImageConditioningInput(temp_img_path, 0, 1.0, 33)],
             streaming_prefetch_count=2,
         )
