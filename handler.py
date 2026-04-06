@@ -207,6 +207,12 @@ def render_template(value: Any, replacements: dict[str, str]) -> Any:
     if isinstance(value, list):
         return [render_template(item, replacements) for item in value]
     if isinstance(value, str):
+        placeholder_key = None
+        if value.startswith("{{") and value.endswith("}}"):
+            candidate = value[2:-2].strip()
+            if candidate in replacements:
+                placeholder_key = candidate
+
         rendered = value
         for key, replacement in replacements.items():
             rendered = rendered.replace(f"{{{{{key}}}}}", replacement)
@@ -214,6 +220,11 @@ def render_template(value: Any, replacements: dict[str, str]) -> Any:
         lowered = rendered.lower()
         if lowered in {"true", "false"}:
             return lowered == "true"
+
+        # Only coerce strings to numbers when the original value was a pure placeholder token.
+        # This preserves ComfyUI node reference ids like "72" as strings.
+        if placeholder_key is None:
+            return rendered
 
         try:
             if rendered.isdigit() or (rendered.startswith("-") and rendered[1:].isdigit()):
