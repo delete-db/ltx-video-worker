@@ -49,7 +49,7 @@ def wait_for_comfyui(timeout_sec: int = 300) -> None:
     raise RuntimeError(f"ComfyUI did not become ready in {timeout_sec}s: {last_error}")
 
 
-def load_workflow(mode: str) -> dict[str, Any]:
+def load_workflow(mode: str) -> tuple[dict[str, Any], str]:
     filename = T2V_WORKFLOW_NAME if mode == "t2v" else I2V_WORKFLOW_NAME
     candidates = [
         VOLUME_WORKFLOW_DIR / filename,
@@ -59,7 +59,7 @@ def load_workflow(mode: str) -> dict[str, Any]:
     for path in candidates:
         if path.exists():
             with path.open("r", encoding="utf-8") as fh:
-                return json.load(fh)
+                return json.load(fh), str(path)
 
     raise FileNotFoundError(
         f"Workflow file not found in any expected location: {', '.join(str(path) for path in candidates)}"
@@ -274,9 +274,12 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
 
     replacements = {}
     try:
-        workflow = load_workflow(mode)
+        workflow, workflow_path = load_workflow(mode)
         replacements = build_template_values(job_input)
         prompt = render_template(copy.deepcopy(workflow), replacements)
+        print(f"Using workflow path: {workflow_path}")
+        print(f"Rendered node 80: {json.dumps(prompt.get('80'), ensure_ascii=True)[:2000]}")
+        print(f"Rendered node 81: {json.dumps(prompt.get('81'), ensure_ascii=True)[:2000]}")
 
         prompt_id = queue_prompt(prompt)
         history = wait_for_history(prompt_id)
