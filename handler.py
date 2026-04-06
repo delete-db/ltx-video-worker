@@ -29,6 +29,7 @@ I2V_WORKFLOW_NAME = os.environ.get("LTX_I2V_WORKFLOW_NAME", "ltx23_i2v_2stage_ap
 REQUEST_TIMEOUT_SEC = int(os.environ.get("REQUEST_TIMEOUT_SEC", "1800"))
 POLL_INTERVAL_SEC = float(os.environ.get("POLL_INTERVAL_SEC", "2.5"))
 RETURN_BASE64 = os.environ.get("RETURN_BASE64", "true").lower() == "true"
+WORKER_VERSION = os.environ.get("WORKER_VERSION", "volume-workflow-v2-vhs")
 
 
 def wait_for_comfyui(timeout_sec: int = 300) -> None:
@@ -250,6 +251,7 @@ def cleanup_temp_inputs(replacements: dict[str, str]) -> None:
 
 
 wait_for_comfyui()
+print(f"Worker version: {WORKER_VERSION}")
 
 
 def handler(job: dict[str, Any]) -> dict[str, Any]:
