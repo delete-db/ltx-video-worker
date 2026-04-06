@@ -213,7 +213,9 @@
     "class_type": "SaveVideo",
     "inputs": {
       "video": ["80", 0],
-      "filename_prefix": "{{FILENAME_PREFIX}}"
+      "filename_prefix": "{{FILENAME_PREFIX}}",
+      "format": "mp4",
+      "codec": "h264"
     }
   }
 }
