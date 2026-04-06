@@ -80,10 +80,12 @@ print(f"Gemma downloaded to: {gemma_root}")
 
 print("Initializing LTX-2.3 pipeline...")
 
-from ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline, ImageConditioningInput
+from ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline
+from ltx_pipelines.utils.args import ImageConditioningInput
+from ltx_pipelines.utils.media_io import encode_video
 from ltx_core.components.guiders import MultiModalGuiderParams
 from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
-from ltx_core.video_utils import encode_video
+from ltx_core.model.video_vae import get_video_chunks_number
 
 distilled_lora = [
     LoraPathStrengthAndSDOps(
@@ -207,14 +209,15 @@ def handler(job):
             images=[ImageConditioningInput(temp_img_path, 0, 1.0, 33)],
         )
 
-        # Collect all frames
-        all_frames = []
-        for frame_batch in video_frames_iter:
-            all_frames.append(frame_batch)
-        video_tensor = torch.cat(all_frames, dim=0) if len(all_frames) > 1 else all_frames[0]
-
-        # Encode to MP4
-        encode_video(video_tensor, output_path, frame_rate)
+        # Encode to MP4 (pass iterator directly — encode_video handles streaming)
+        video_chunks_number = get_video_chunks_number(num_frames)
+        encode_video(
+            video=video_frames_iter,
+            fps=frame_rate,
+            audio=audio,
+            output_path=output_path,
+            video_chunks_number=video_chunks_number,
+        )
 
     except Exception as e:
         if os.path.exists(temp_img_path):
