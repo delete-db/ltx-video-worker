@@ -1,268 +1,294 @@
-"""
-RunPod Serverless Handler for LTX-2.3 Image-to-Video Generation.
-Uses TI2VidTwoStagesPipeline with the full dev model for cinematic quality.
-
-Pipeline: stage 1 generates at half resolution with CFG+STG guidance (30 steps),
-stage 2 upsamples 2x and refines with distilled LoRA (4 steps).
-
-Memory strategy for RTX 6000 Ada 48GB:
-- FP8 quantization (~22GB model weights instead of ~44GB)
-- Layer streaming (transformer layers stay on CPU, stream to GPU on demand)
-- StateDictRegistry (shared weights between stage 1 and stage 2)
-"""
-
-import os
-import io
-import sys
 import base64
+import copy
+import io
+import json
+import os
 import tempfile
-import torch
+import time
+from pathlib import Path
+from typing import Any
+
 import requests
+import runpod
 from PIL import Image
 
-# Add LTX-2 packages to path
-sys.path.insert(0, "/app/ltx2/packages/ltx-pipelines/src")
-sys.path.insert(0, "/app/ltx2/packages/ltx-core/src")
 
-import runpod
+COMFY_HOST = os.environ.get("COMFY_HOST", "127.0.0.1")
+COMFY_PORT = int(os.environ.get("COMFY_PORT", "8188"))
+COMFY_URL = f"http://{COMFY_HOST}:{COMFY_PORT}"
+COMFY_OUTPUT_DIR = Path(os.environ.get("COMFY_OUTPUT_DIR", "/workspace/ComfyUI/output"))
 
-# ── Configuration ────────────────────────────────────────────
-
-CACHE_DIR = "/tmp/ltx-models"
-HF_MODEL = "Lightricks/LTX-2.3"
-GEMMA_MODEL = "google/gemma-3-12b-it-qat-q4_0-unquantized"
-
-os.makedirs(CACHE_DIR, exist_ok=True)
-
-# Set HF token if available (needed for Gemma license)
-hf_token = os.environ.get("HF_TOKEN", os.environ.get("HUGGING_FACE_HUB_TOKEN"))
-if hf_token:
-    os.environ["HF_TOKEN"] = hf_token
-    print(f"HF_TOKEN set ({hf_token[:8]}...)")
-else:
-    print("WARNING: No HF_TOKEN found. Gemma download may fail if license not accepted.")
-
-# ── Download Models ──────────────────────────────────────────
-
-from huggingface_hub import hf_hub_download, snapshot_download
-
-print("Downloading LTX-2.3 dev checkpoint...")
-checkpoint_path = hf_hub_download(
-    repo_id=HF_MODEL,
-    filename="ltx-2.3-22b-dev.safetensors",
-    cache_dir=CACHE_DIR,
-    token=hf_token,
+WORKFLOW_DIR = Path(os.environ.get("WORKFLOW_DIR", "/app/workflows"))
+T2V_WORKFLOW_PATH = Path(
+    os.environ.get(
+        "LTX_T2V_WORKFLOW_PATH",
+        str(WORKFLOW_DIR / "ltx23_t2v_2stage_api.json"),
+    )
+)
+I2V_WORKFLOW_PATH = Path(
+    os.environ.get(
+        "LTX_I2V_WORKFLOW_PATH",
+        str(WORKFLOW_DIR / "ltx23_i2v_2stage_api.json"),
+    )
 )
 
-print("Downloading distilled LoRA (for stage 2 refinement)...")
-distilled_lora_path = hf_hub_download(
-    repo_id=HF_MODEL,
-    filename="ltx-2.3-22b-distilled-lora-384.safetensors",
-    cache_dir=CACHE_DIR,
-    token=hf_token,
-)
-
-print("Downloading spatial upscaler...")
-spatial_upscaler_path = hf_hub_download(
-    repo_id=HF_MODEL,
-    filename="ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
-    cache_dir=CACHE_DIR,
-    token=hf_token,
-)
-
-print("Downloading Gemma 3 12B text encoder (this may take a while)...")
-gemma_root = snapshot_download(
-    repo_id=GEMMA_MODEL,
-    cache_dir=CACHE_DIR,
-    token=hf_token,
-)
-print(f"Gemma downloaded to: {gemma_root}")
-
-# ── Initialize Pipeline ─────────────────────────────────────
-
-print("Initializing LTX-2.3 TI2VidTwoStagesPipeline (dev model)...")
-
-from ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline
-from ltx_pipelines.utils.args import ImageConditioningInput
-from ltx_pipelines.utils.media_io import encode_video
-from ltx_core.components.guiders import MultiModalGuiderParams
-from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
-from ltx_core.model.video_vae import get_video_chunks_number
-from ltx_core.quantization import QuantizationPolicy
-from ltx_core.loader.registry import StateDictRegistry
-
-quantization = QuantizationPolicy.fp8_cast()
-print("Using FP8 quantization")
-
-registry = StateDictRegistry()
-
-distilled_lora = [
-    LoraPathStrengthAndSDOps(
-        distilled_lora_path,
-        0.6,
-        LTXV_LORA_COMFY_RENAMING_MAP,
-    ),
-]
-
-pipeline = TI2VidTwoStagesPipeline(
-    checkpoint_path=checkpoint_path,
-    distilled_lora=distilled_lora,
-    spatial_upsampler_path=spatial_upscaler_path,
-    gemma_root=gemma_root,
-    loras=[],
-    quantization=quantization,
-    registry=registry,
-)
-
-print("LTX-2.3 pipeline ready!")
-
-# ── Official LTX-2.3 recommended guider params ──────────────
-
-# From ltx_pipelines.utils.constants.LTX_2_3_PARAMS
-VIDEO_GUIDER_PARAMS = MultiModalGuiderParams(
-    cfg_scale=3.0,
-    stg_scale=1.0,
-    rescale_scale=0.7,
-    modality_scale=3.0,
-    skip_step=0,
-    stg_blocks=[28],
-)
-
-AUDIO_GUIDER_PARAMS = MultiModalGuiderParams(
-    cfg_scale=7.0,
-    stg_scale=1.0,
-    rescale_scale=0.7,
-    modality_scale=3.0,
-    skip_step=0,
-    stg_blocks=[28],
-)
-
-DEFAULT_NEGATIVE_PROMPT = (
-    "blurry, out of focus, overexposed, underexposed, low contrast, washed out colors, excessive noise, "
-    "grainy texture, poor lighting, flickering, motion blur, distorted proportions, unnatural skin tones, "
-    "deformed facial features, asymmetrical face, missing facial features, extra limbs, disfigured hands, "
-    "wrong hand count, artifacts around text, inconsistent perspective, camera shake, incorrect depth of "
-    "field, background too sharp, background clutter, distracting reflections, harsh shadows, inconsistent "
-    "lighting direction, color banding, cartoonish rendering, 3D CGI look, unrealistic materials, uncanny "
-    "valley effect, incorrect ethnicity, wrong gender, exaggerated expressions, wrong gaze direction, "
-    "mismatched lip sync, silent or muted audio, distorted voice, robotic voice, echo, background noise, "
-    "off-sync audio, incorrect dialogue, added dialogue, repetitive speech, jittery movement, awkward "
-    "pauses, incorrect timing, unnatural transitions, inconsistent framing, tilted camera, flat lighting, "
-    "inconsistent tone, cinematic oversaturation, stylized filters, or AI artifacts."
-)
+REQUEST_TIMEOUT_SEC = int(os.environ.get("REQUEST_TIMEOUT_SEC", "1800"))
+POLL_INTERVAL_SEC = float(os.environ.get("POLL_INTERVAL_SEC", "2.5"))
+RETURN_BASE64 = os.environ.get("RETURN_BASE64", "true").lower() == "true"
 
 
-# ── Helper Functions ─────────────────────────────────────────
+def wait_for_comfyui(timeout_sec: int = 300) -> None:
+    deadline = time.time() + timeout_sec
+    last_error = None
 
-def download_image(url: str, save_path: str) -> str:
-    response = requests.get(url, timeout=30)
-    response.raise_for_status()
-    img = Image.open(io.BytesIO(response.content)).convert("RGB")
-    img.save(save_path)
-    return save_path
+    while time.time() < deadline:
+        try:
+            response = requests.get(f"{COMFY_URL}/system_stats", timeout=5)
+            if response.ok:
+                print("ComfyUI is ready")
+                return
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+        time.sleep(2)
 
-
-def decode_base64_image(data: str, save_path: str) -> str:
-    if "," in data:
-        data = data.split(",")[1]
-    img_bytes = base64.b64decode(data)
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    img.save(save_path)
-    return save_path
+    raise RuntimeError(f"ComfyUI did not become ready in {timeout_sec}s: {last_error}")
 
 
-# ── Handler ──────────────────────────────────────────────────
+def load_workflow(mode: str) -> dict[str, Any]:
+    path = T2V_WORKFLOW_PATH if mode == "t2v" else I2V_WORKFLOW_PATH
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Workflow file not found: {path}. Export the ComfyUI workflow in API format and place it there."
+        )
+    with path.open("r", encoding="utf-8") as fh:
+        return json.load(fh)
 
-def handler(job):
-    job_input = job["input"]
 
-    # Get image input
-    image_input = job_input.get("image")
-    if not image_input:
-        return {"error": "No image provided. Send 'image' as URL or base64."}
-
-    # Save input image to temp file
-    temp_img = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-    temp_img_path = temp_img.name
-    temp_img.close()
+def write_temp_image_from_input(image_input: str) -> str:
+    temp_file = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    temp_path = temp_file.name
+    temp_file.close()
 
     try:
-        if image_input.startswith("http"):
-            download_image(image_input, temp_img_path)
+        if image_input.startswith("http://") or image_input.startswith("https://"):
+            response = requests.get(image_input, timeout=30)
+            response.raise_for_status()
+            image = Image.open(io.BytesIO(response.content)).convert("RGB")
         else:
-            decode_base64_image(image_input, temp_img_path)
-    except Exception as e:
-        return {"error": f"Failed to load image: {str(e)}"}
+            payload = image_input.split(",", 1)[1] if "," in image_input else image_input
+            image = Image.open(io.BytesIO(base64.b64decode(payload))).convert("RGB")
 
-    # Parameters with sensible defaults
-    prompt = job_input.get("prompt", "gentle camera movement, subtle motion")
-    negative_prompt = job_input.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
-    num_frames = job_input.get("num_frames", 97)      # ~3.8 sec at 25fps
-    width = job_input.get("width", 768)
-    height = job_input.get("height", 1344)
-    num_inference_steps = job_input.get("num_inference_steps", 30)  # LTX-2.3 default
-    seed = job_input.get("seed", 42)
-    frame_rate = job_input.get("frame_rate", 25.0)
+        image.save(temp_path)
+        return temp_path
+    except Exception:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise
 
-    # Two-stage pipeline requires dimensions divisible by 64, frames by 8+1
-    width = (width // 64) * 64
-    height = (height // 64) * 64
-    num_frames = ((num_frames - 1) // 8) * 8 + 1
 
-    print(f"Generating: {width}x{height}, {num_frames} frames, {num_inference_steps} steps, seed={seed}")
+def clamp_dimensions(width: int, height: int) -> tuple[int, int]:
+    return max(64, (width // 64) * 64), max(64, (height // 64) * 64)
 
-    output_path = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
 
-    try:
-        video_frames_iter, audio = pipeline(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            seed=seed,
-            height=height,
-            width=width,
-            num_frames=num_frames,
-            frame_rate=frame_rate,
-            num_inference_steps=num_inference_steps,
-            video_guider_params=VIDEO_GUIDER_PARAMS,
-            audio_guider_params=AUDIO_GUIDER_PARAMS,
-            images=[ImageConditioningInput(temp_img_path, 0, 1.0, 33)],
-            streaming_prefetch_count=2,
-        )
+def clamp_num_frames(num_frames: int) -> int:
+    return max(9, ((num_frames - 1) // 8) * 8 + 1)
 
-        # Encode to MP4
-        video_chunks_number = get_video_chunks_number(num_frames)
-        encode_video(
-            video=video_frames_iter,
-            fps=frame_rate,
-            audio=audio,
-            output_path=output_path,
-            video_chunks_number=video_chunks_number,
-        )
 
-    except Exception as e:
-        if os.path.exists(temp_img_path):
-            os.unlink(temp_img_path)
-        if os.path.exists(output_path):
-            os.unlink(output_path)
-        return {"error": f"Generation failed: {str(e)}"}
+def build_template_values(job_input: dict[str, Any]) -> dict[str, str]:
+    mode = job_input.get("mode", "t2v").lower()
+    width = int(job_input.get("width", 768))
+    height = int(job_input.get("height", 1344))
+    width, height = clamp_dimensions(width, height)
 
-    # Read output video
-    with open(output_path, "rb") as f:
-        video_bytes = f.read()
+    fps = float(job_input.get("fps", 25))
+    duration_seconds = float(job_input.get("duration_seconds", 4))
+    num_frames = int(job_input.get("num_frames", round(duration_seconds * fps)))
+    num_frames = clamp_num_frames(num_frames)
 
-    # Cleanup temp files
-    os.unlink(temp_img_path)
-    os.unlink(output_path)
+    prompt = job_input.get("prompt", "").strip()
+    if not prompt:
+      raise ValueError("Missing required input: prompt")
 
-    video_base64 = base64.b64encode(video_bytes).decode("utf-8")
-    duration_seconds = num_frames / frame_rate
+    negative_prompt = job_input.get("negative_prompt", "").strip()
+    seed = int(job_input.get("seed", 42))
+    stage1_steps = int(job_input.get("stage1_steps", 30))
+    stage2_steps = int(job_input.get("stage2_steps", 6))
+    cfg = float(job_input.get("cfg", 3.0))
+    stg_scale = float(job_input.get("stg_scale", 1.0))
+    stg_blocks = job_input.get("stg_blocks", "14,19")
+    sampler = job_input.get("sampler", "euler")
+    scheduler = job_input.get("scheduler", "simple")
+    filename_prefix = job_input.get("filename_prefix", f"ltx23_{mode}")
 
-    print(f"Done: {len(video_bytes)} bytes, {duration_seconds:.1f}s")
-
-    return {
-        "video_base64": video_base64,
-        "duration_seconds": duration_seconds,
+    values = {
+        "PROMPT": prompt,
+        "NEGATIVE_PROMPT": negative_prompt,
+        "WIDTH": str(width),
+        "HEIGHT": str(height),
+        "NUM_FRAMES": str(num_frames),
+        "FPS": str(fps),
+        "SEED": str(seed),
+        "STAGE1_STEPS": str(stage1_steps),
+        "STAGE2_STEPS": str(stage2_steps),
+        "CFG": str(cfg),
+        "STG_SCALE": str(stg_scale),
+        "STG_BLOCKS": str(stg_blocks),
+        "SAMPLER": sampler,
+        "SCHEDULER": scheduler,
+        "FILENAME_PREFIX": filename_prefix,
     }
+
+    image_input = job_input.get("image")
+    if mode == "i2v":
+        if not image_input:
+            raise ValueError("Missing required input: image for i2v mode")
+        image_path = write_temp_image_from_input(image_input)
+        values["IMAGE_PATH"] = image_path
+
+    return values
+
+
+def render_template(value: Any, replacements: dict[str, str]) -> Any:
+    if isinstance(value, dict):
+        return {key: render_template(inner, replacements) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [render_template(item, replacements) for item in value]
+    if isinstance(value, str):
+        rendered = value
+        for key, replacement in replacements.items():
+            rendered = rendered.replace(f"{{{{{key}}}}}", replacement)
+
+        lowered = rendered.lower()
+        if lowered in {"true", "false"}:
+            return lowered == "true"
+
+        try:
+            if rendered.isdigit() or (rendered.startswith("-") and rendered[1:].isdigit()):
+                return int(rendered)
+            return float(rendered) if "." in rendered else rendered
+        except ValueError:
+            return rendered
+    return value
+
+
+def queue_prompt(prompt: dict[str, Any]) -> str:
+    response = requests.post(
+        f"{COMFY_URL}/prompt",
+        json={"prompt": prompt},
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json()
+    prompt_id = data.get("prompt_id")
+    if not prompt_id:
+        raise RuntimeError(f"ComfyUI did not return prompt_id: {data}")
+    return prompt_id
+
+
+def wait_for_history(prompt_id: str) -> dict[str, Any]:
+    deadline = time.time() + REQUEST_TIMEOUT_SEC
+    last_payload = None
+
+    while time.time() < deadline:
+        response = requests.get(f"{COMFY_URL}/history/{prompt_id}", timeout=30)
+        response.raise_for_status()
+        payload = response.json()
+        last_payload = payload
+
+        if prompt_id in payload:
+            result = payload[prompt_id]
+            status = result.get("status", {})
+            if status.get("status_str") == "error":
+                raise RuntimeError(f"ComfyUI generation failed: {json.dumps(result, ensure_ascii=True)[:2000]}")
+            outputs = result.get("outputs")
+            if outputs:
+                return result
+
+        time.sleep(POLL_INTERVAL_SEC)
+
+    raise TimeoutError(f"Timed out waiting for prompt {prompt_id}. Last payload: {str(last_payload)[:2000]}")
+
+
+def extract_video_file(history: dict[str, Any]) -> tuple[str, str]:
+    outputs = history.get("outputs", {})
+    for _, node_output in outputs.items():
+        gifs = node_output.get("gifs") or []
+        if gifs:
+            item = gifs[0]
+            filename = item["filename"]
+            subfolder = item.get("subfolder", "")
+            return filename, subfolder
+
+        videos = node_output.get("videos") or []
+        if videos:
+            item = videos[0]
+            filename = item["filename"]
+            subfolder = item.get("subfolder", "")
+            return filename, subfolder
+
+        images = node_output.get("images") or []
+        if images and images[0].get("filename", "").lower().endswith(".mp4"):
+            item = images[0]
+            filename = item["filename"]
+            subfolder = item.get("subfolder", "")
+            return filename, subfolder
+
+    raise RuntimeError(f"No output video found in ComfyUI history: {json.dumps(history, ensure_ascii=True)[:2000]}")
+
+
+def resolve_output_path(filename: str, subfolder: str) -> Path:
+    if subfolder:
+        return COMFY_OUTPUT_DIR / subfolder / filename
+    return COMFY_OUTPUT_DIR / filename
+
+
+def cleanup_temp_inputs(replacements: dict[str, str]) -> None:
+    image_path = replacements.get("IMAGE_PATH")
+    if image_path and os.path.exists(image_path):
+        os.unlink(image_path)
+
+
+wait_for_comfyui()
+
+
+def handler(job: dict[str, Any]) -> dict[str, Any]:
+    job_input = job.get("input", {})
+    mode = job_input.get("mode", "t2v").lower()
+    if mode not in {"t2v", "i2v"}:
+        return {"error": "Invalid mode. Supported values: t2v, i2v"}
+
+    replacements = {}
+    try:
+        workflow = load_workflow(mode)
+        replacements = build_template_values(job_input)
+        prompt = render_template(copy.deepcopy(workflow), replacements)
+
+        prompt_id = queue_prompt(prompt)
+        history = wait_for_history(prompt_id)
+        filename, subfolder = extract_video_file(history)
+        output_path = resolve_output_path(filename, subfolder)
+
+        if not output_path.exists():
+            raise FileNotFoundError(f"Expected ComfyUI output missing: {output_path}")
+
+        response = {
+            "prompt_id": prompt_id,
+            "mode": mode,
+            "duration_seconds": int(replacements["NUM_FRAMES"]) / float(replacements["FPS"]),
+            "file_name": filename,
+            "subfolder": subfolder,
+            "output_path": str(output_path),
+        }
+
+        if RETURN_BASE64:
+            video_bytes = output_path.read_bytes()
+            response["video_base64"] = base64.b64encode(video_bytes).decode("utf-8")
+
+        return response
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+    finally:
+        cleanup_temp_inputs(replacements)
 
 
 runpod.serverless.start({"handler": handler})
