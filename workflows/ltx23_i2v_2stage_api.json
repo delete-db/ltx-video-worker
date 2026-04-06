@@ -76,7 +76,8 @@
     "inputs": {
       "frames_number": "{{NUM_FRAMES}}",
       "frame_rate": "{{FPS}}",
-      "batch_size": 1
+      "batch_size": 1,
+      "audio_vae": ["72", 0]
     }
   },
   "33": {
@@ -213,11 +214,11 @@
       "vae": ["1", 2],
       "latents": ["70", 0],
       "spatial_tiles": 2,
-      "spatial_overlap": 64,
+      "spatial_overlap": 4,
       "temporal_tile_length": 64,
       "temporal_overlap": 8,
       "last_frame_fix": true,
-      "working_device": "gpu",
+      "working_device": "auto",
       "working_dtype": "auto"
     }
   },
