@@ -64,6 +64,29 @@ def collect_filesystem_debug() -> dict[str, Any]:
     return {str(path): describe_dir(path) for path in paths}
 
 
+def collect_mount_debug() -> dict[str, Any]:
+    mount_lines: list[str] = []
+    mount_file = Path("/proc/mounts")
+    if mount_file.exists():
+        try:
+            with mount_file.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    lowered = line.lower()
+                    if any(token in lowered for token in ("runpod", "workspace", "nfs", "fuse")):
+                        mount_lines.append(line.strip())
+        except Exception as exc:  # noqa: BLE001
+            mount_lines.append(f"error reading /proc/mounts: {exc}")
+    else:
+        mount_lines.append("/proc/mounts missing")
+    return {
+        "comfy_input_dir": str(COMFY_INPUT_DIR),
+        "comfy_output_dir": str(COMFY_OUTPUT_DIR),
+        "volume_workflow_dir": str(VOLUME_WORKFLOW_DIR),
+        "workflow_dir": str(WORKFLOW_DIR),
+        "mounts": mount_lines[:50],
+    }
+
+
 def wait_for_comfyui(timeout_sec: int = 300) -> None:
     deadline = time.time() + timeout_sec
     last_error = None
@@ -304,6 +327,8 @@ def cleanup_temp_inputs(replacements: dict[str, str]) -> None:
 
 wait_for_comfyui()
 print(f"Worker version: {WORKER_VERSION}")
+print(f"Mount debug: {json.dumps(collect_mount_debug(), ensure_ascii=True)[:4000]}")
+print(f"Filesystem debug: {json.dumps(collect_filesystem_debug(), ensure_ascii=True)[:4000]}")
 
 
 def handler(job: dict[str, Any]) -> dict[str, Any]:
