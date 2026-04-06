@@ -113,7 +113,7 @@
   "50": {
     "class_type": "LTXVSeparateAVLatent",
     "inputs": {
-      "samples": ["44", 0]
+      "av_latent": ["44", 0]
     }
   },
   "51": {
@@ -171,7 +171,7 @@
   "70": {
     "class_type": "LTXVSeparateAVLatent",
     "inputs": {
-      "samples": ["64", 0]
+      "av_latent": ["64", 0]
     }
   },
   "71": {
