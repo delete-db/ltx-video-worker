@@ -32,6 +32,38 @@ RETURN_BASE64 = os.environ.get("RETURN_BASE64", "true").lower() == "true"
 WORKER_VERSION = os.environ.get("WORKER_VERSION", "volume-workflow-v2-vhs")
 
 
+def describe_dir(path: Path, max_entries: int = 20) -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "path": str(path),
+        "exists": path.exists(),
+        "is_dir": path.is_dir(),
+    }
+    if path.exists() and path.is_dir():
+        try:
+            entries = sorted(child.name for child in path.iterdir())
+            info["entries"] = entries[:max_entries]
+            info["entry_count"] = len(entries)
+        except Exception as exc:  # noqa: BLE001
+            info["list_error"] = str(exc)
+    return info
+
+
+def collect_filesystem_debug() -> dict[str, Any]:
+    paths = [
+        Path("/runpod-volume"),
+        VOLUME_WORKFLOW_DIR,
+        WORKFLOW_DIR,
+        COMFY_INPUT_DIR,
+        COMFY_OUTPUT_DIR,
+        Path("/runpod-volume/ComfyUI"),
+        Path("/runpod-volume/ComfyUI/models"),
+        Path("/runpod-volume/ComfyUI/models/checkpoints"),
+        Path("/runpod-volume/ComfyUI/models/text_encoders"),
+        Path("/runpod-volume/ComfyUI/models/latent_upscale_models"),
+    ]
+    return {str(path): describe_dir(path) for path in paths}
+
+
 def wait_for_comfyui(timeout_sec: int = 300) -> None:
     deadline = time.time() + timeout_sec
     last_error = None
@@ -284,6 +316,12 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc)}
 
+    if mode == "filesystem_debug":
+        try:
+            return collect_filesystem_debug()
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)}
+
     if mode == "rendered_workflow":
         try:
             workflow_mode = job_input.get("workflow_mode", "t2v").lower()
@@ -308,7 +346,9 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
             return {"error": str(exc)}
 
     if mode not in {"t2v", "i2v"}:
-        return {"error": "Invalid mode. Supported values: t2v, i2v, object_info, rendered_workflow"}
+        return {
+            "error": "Invalid mode. Supported values: t2v, i2v, object_info, rendered_workflow, filesystem_debug"
+        }
 
     replacements = {}
     try:
