@@ -168,7 +168,12 @@ def queue_prompt(prompt: dict[str, Any]) -> str:
         json={"prompt": prompt},
         timeout=30,
     )
-    response.raise_for_status()
+    if not response.ok:
+        try:
+            error_payload = response.json()
+        except Exception:  # noqa: BLE001
+            error_payload = response.text
+        raise RuntimeError(f"ComfyUI /prompt error: {error_payload}")
     data = response.json()
     prompt_id = data.get("prompt_id")
     if not prompt_id:
