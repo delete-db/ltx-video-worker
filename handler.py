@@ -16,8 +16,8 @@ from PIL import Image
 COMFY_HOST = os.environ.get("COMFY_HOST", "127.0.0.1")
 COMFY_PORT = int(os.environ.get("COMFY_PORT", "8188"))
 COMFY_URL = f"http://{COMFY_HOST}:{COMFY_PORT}"
-COMFY_OUTPUT_DIR = Path(os.environ.get("COMFY_OUTPUT_DIR", "/workspace/ComfyUI/output"))
-COMFY_INPUT_DIR = Path(os.environ.get("COMFY_INPUT_DIR", "/workspace/ComfyUI/input"))
+COMFY_OUTPUT_DIR = Path(os.environ.get("COMFY_OUTPUT_DIR", "/runpod-volume/ComfyUI/output"))
+COMFY_INPUT_DIR = Path(os.environ.get("COMFY_INPUT_DIR", "/runpod-volume/ComfyUI/input"))
 
 WORKFLOW_DIR = Path(os.environ.get("WORKFLOW_DIR", "/app/workflows"))
 T2V_WORKFLOW_PATH = Path(
