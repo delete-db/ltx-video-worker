@@ -56,6 +56,11 @@ def load_workflow(mode: str) -> tuple[dict[str, Any], str]:
         WORKFLOW_DIR / filename,
     ]
 
+    print(
+        "Workflow candidates: "
+        + ", ".join(f"{path} exists={path.exists()}" for path in candidates)
+    )
+
     for path in candidates:
         if path.exists():
             with path.open("r", encoding="utf-8") as fh:
@@ -117,13 +122,15 @@ def build_template_values(job_input: dict[str, Any]) -> dict[str, str]:
     cfg = float(job_input.get("cfg", 3.0))
     filename_prefix = job_input.get("filename_prefix", f"ltx23_{mode}")
 
+    fps_value = str(int(fps)) if fps.is_integer() else str(fps)
+
     values = {
         "PROMPT": prompt,
         "NEGATIVE_PROMPT": negative_prompt,
         "WIDTH": str(width),
         "HEIGHT": str(height),
         "NUM_FRAMES": str(num_frames),
-        "FPS": str(fps),
+        "FPS": fps_value,
         "SEED": str(seed),
         "CFG": str(cfg),
         "FILENAME_PREFIX": filename_prefix,
@@ -307,6 +314,8 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
     try:
         prompt, workflow_path, replacements = build_rendered_prompt(job_input)
         print(f"Using workflow path: {workflow_path}")
+        print(f"Rendered node 72: {json.dumps(prompt.get('72'), ensure_ascii=True)[:2000]}")
+        print(f"Rendered node 73: {json.dumps(prompt.get('73'), ensure_ascii=True)[:2000]}")
         print(f"Rendered node 80: {json.dumps(prompt.get('80'), ensure_ascii=True)[:2000]}")
         print(f"Rendered node 81: {json.dumps(prompt.get('81'), ensure_ascii=True)[:2000]}")
 
