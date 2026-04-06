@@ -19,19 +19,12 @@ COMFY_URL = f"http://{COMFY_HOST}:{COMFY_PORT}"
 COMFY_OUTPUT_DIR = Path(os.environ.get("COMFY_OUTPUT_DIR", "/runpod-volume/ComfyUI/output"))
 COMFY_INPUT_DIR = Path(os.environ.get("COMFY_INPUT_DIR", "/runpod-volume/ComfyUI/input"))
 
+VOLUME_WORKFLOW_DIR = Path(
+    os.environ.get("VOLUME_WORKFLOW_DIR", "/runpod-volume/ComfyUI/workflows")
+)
 WORKFLOW_DIR = Path(os.environ.get("WORKFLOW_DIR", "/app/workflows"))
-T2V_WORKFLOW_PATH = Path(
-    os.environ.get(
-        "LTX_T2V_WORKFLOW_PATH",
-        str(WORKFLOW_DIR / "ltx23_t2v_2stage_api.json"),
-    )
-)
-I2V_WORKFLOW_PATH = Path(
-    os.environ.get(
-        "LTX_I2V_WORKFLOW_PATH",
-        str(WORKFLOW_DIR / "ltx23_i2v_2stage_api.json"),
-    )
-)
+T2V_WORKFLOW_NAME = os.environ.get("LTX_T2V_WORKFLOW_NAME", "ltx23_t2v_2stage_api.json")
+I2V_WORKFLOW_NAME = os.environ.get("LTX_I2V_WORKFLOW_NAME", "ltx23_i2v_2stage_api.json")
 
 REQUEST_TIMEOUT_SEC = int(os.environ.get("REQUEST_TIMEOUT_SEC", "1800"))
 POLL_INTERVAL_SEC = float(os.environ.get("POLL_INTERVAL_SEC", "2.5"))
@@ -56,13 +49,20 @@ def wait_for_comfyui(timeout_sec: int = 300) -> None:
 
 
 def load_workflow(mode: str) -> dict[str, Any]:
-    path = T2V_WORKFLOW_PATH if mode == "t2v" else I2V_WORKFLOW_PATH
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Workflow file not found: {path}. Export the ComfyUI workflow in API format and place it there."
-        )
-    with path.open("r", encoding="utf-8") as fh:
-        return json.load(fh)
+    filename = T2V_WORKFLOW_NAME if mode == "t2v" else I2V_WORKFLOW_NAME
+    candidates = [
+        VOLUME_WORKFLOW_DIR / filename,
+        WORKFLOW_DIR / filename,
+    ]
+
+    for path in candidates:
+        if path.exists():
+            with path.open("r", encoding="utf-8") as fh:
+                return json.load(fh)
+
+    raise FileNotFoundError(
+        f"Workflow file not found in any expected location: {', '.join(str(path) for path in candidates)}"
+    )
 
 
 def write_temp_image_from_input(image_input: str) -> str:
