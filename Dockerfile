@@ -27,17 +27,19 @@ RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12
 
 RUN git clone https://github.com/comfyanonymous/ComfyUI.git "${COMFY_ROOT}"
 RUN git clone https://github.com/Lightricks/ComfyUI-LTXVideo.git "${COMFY_ROOT}/custom_nodes/ComfyUI-LTXVideo"
+RUN git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git "${COMFY_ROOT}/custom_nodes/ComfyUI-VideoHelperSuite"
 
 RUN python -m pip install --upgrade pip setuptools wheel
 RUN python -m pip install \
-    --index-url https://download.pytorch.org/whl/cu124 \
-    torch torchvision torchaudio
+    --pre torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/nightly/cu128
 RUN python -m pip install -r "${COMFY_ROOT}/requirements.txt"
 RUN python -m pip install \
-    --index-url https://download.pytorch.org/whl/cu124 \
-    --force-reinstall \
-    torch torchvision torchaudio
+    --pre torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/nightly/cu128 \
+    --force-reinstall
 RUN if [ -f "${COMFY_ROOT}/custom_nodes/ComfyUI-LTXVideo/requirements.txt" ]; then python -m pip install -r "${COMFY_ROOT}/custom_nodes/ComfyUI-LTXVideo/requirements.txt"; fi
+RUN if [ -f "${COMFY_ROOT}/custom_nodes/ComfyUI-VideoHelperSuite/requirements.txt" ]; then python -m pip install -r "${COMFY_ROOT}/custom_nodes/ComfyUI-VideoHelperSuite/requirements.txt"; fi
 RUN python -m pip install runpod requests Pillow huggingface_hub
 
 COPY handler.py /app/handler.py

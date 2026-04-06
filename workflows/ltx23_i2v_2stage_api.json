@@ -71,14 +71,6 @@
       "batch_size": 1
     }
   },
-  "31": {
-    "class_type": "LTXVEmptyLatentAudio",
-    "inputs": {
-      "frames_number": "{{NUM_FRAMES}}",
-      "frame_rate": "{{FPS}}",
-      "batch_size": 1
-    }
-  },
   "33": {
     "class_type": "LTXVImgToVideoConditionOnly",
     "inputs": {
@@ -87,13 +79,6 @@
       "vae": ["1", 2],
       "strength": 0.7,
       "bypass": false
-    }
-  },
-  "32": {
-    "class_type": "LTXVConcatAVLatent",
-    "inputs": {
-      "video_latent": ["33", 0],
-      "audio_latent": ["31", 0]
     }
   },
   "40": {
@@ -130,19 +115,13 @@
       "guider": ["40", 0],
       "sampler": ["41", 0],
       "sigmas": ["42", 0],
-      "latent_image": ["32", 0]
-    }
-  },
-  "50": {
-    "class_type": "LTXVSeparateAVLatent",
-    "inputs": {
-      "samples": ["44", 0]
+      "latent_image": ["33", 0]
     }
   },
   "51": {
     "class_type": "LTXVLatentUpsampler",
     "inputs": {
-      "samples": ["50", 0],
+      "samples": ["44", 0],
       "upscale_model": ["3", 0],
       "vae": ["1", 2]
     }
@@ -155,13 +134,6 @@
       "vae": ["1", 2],
       "strength": 1.0,
       "bypass": false
-    }
-  },
-  "52": {
-    "class_type": "LTXVConcatAVLatent",
-    "inputs": {
-      "video_latent": ["53", 0],
-      "audio_latent": ["50", 1]
     }
   },
   "60": {
@@ -198,19 +170,13 @@
       "guider": ["60", 0],
       "sampler": ["61", 0],
       "sigmas": ["62", 0],
-      "latent_image": ["52", 0]
-    }
-  },
-  "70": {
-    "class_type": "LTXVSeparateAVLatent",
-    "inputs": {
-      "samples": ["64", 0]
+      "latent_image": ["53", 0]
     }
   },
   "71": {
     "class_type": "VAEDecodeTiled",
     "inputs": {
-      "samples": ["70", 0],
+      "samples": ["64", 0],
       "vae": ["1", 2],
       "tile_size": 512,
       "overlap": 64,
@@ -218,32 +184,16 @@
       "temporal_overlap": 4
     }
   },
-  "72": {
-    "class_type": "LTXVAudioVAELoader",
-    "inputs": {
-      "ckpt_name": "ltx-2.3-22b-dev.safetensors"
-    }
-  },
-  "73": {
-    "class_type": "LTXVAudioVAEDecode",
-    "inputs": {
-      "samples": ["70", 1],
-      "vae": ["72", 0]
-    }
-  },
   "80": {
-    "class_type": "CreateVideo",
+    "class_type": "VHS_VideoCombine",
     "inputs": {
       "images": ["71", 0],
-      "audio": ["73", 0],
-      "fps": "{{FPS}}"
-    }
-  },
-  "81": {
-    "class_type": "SaveVideo",
-    "inputs": {
-      "video": ["80", 0],
-      "filename_prefix": "{{FILENAME_PREFIX}}"
+      "frame_rate": "{{FPS}}",
+      "loop_count": 0,
+      "filename_prefix": "{{FILENAME_PREFIX}}",
+      "format": "video/h264-mp4",
+      "pingpong": false,
+      "save_output": true
     }
   }
 }
