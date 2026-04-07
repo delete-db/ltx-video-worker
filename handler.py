@@ -1,164 +1,132 @@
+"""
+RunPod Serverless handler for LTX-2.3 video generation.
+Uses ltx-pipelines directly (no ComfyUI) for maximum speed.
+Models are loaded once at startup and kept in GPU memory.
+"""
+
 import base64
-import copy
 import io
-import json
 import os
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
-import requests
 import runpod
+import torch
 from PIL import Image
 
+# ── Configuration ───────────────────────────────────────────
 
-COMFY_HOST = os.environ.get("COMFY_HOST", "127.0.0.1")
-COMFY_PORT = int(os.environ.get("COMFY_PORT", "8188"))
-COMFY_URL = f"http://{COMFY_HOST}:{COMFY_PORT}"
-COMFY_OUTPUT_DIR = Path(os.environ.get("COMFY_OUTPUT_DIR", "/runpod-volume/ComfyUI/output"))
-COMFY_INPUT_DIR = Path(os.environ.get("COMFY_INPUT_DIR", "/runpod-volume/ComfyUI/input"))
-
-VOLUME_WORKFLOW_DIR = Path(
-    os.environ.get("VOLUME_WORKFLOW_DIR", "/runpod-volume/ComfyUI/workflows")
+MODELS_ROOT = Path(os.environ.get("MODELS_ROOT", "/runpod-volume/ComfyUI/models"))
+CHECKPOINT_PATH = os.environ.get(
+    "CHECKPOINT_PATH",
+    str(MODELS_ROOT / "checkpoints" / "ltx-2.3-22b-dev.safetensors"),
 )
-WORKFLOW_DIR = Path(os.environ.get("WORKFLOW_DIR", "/app/workflows"))
-T2V_WORKFLOW_NAME = os.environ.get("LTX_T2V_WORKFLOW_NAME", "ltx23_t2v_2stage_api.json")
-I2V_WORKFLOW_NAME = os.environ.get("LTX_I2V_WORKFLOW_NAME", "ltx23_i2v_2stage_api.json")
+DISTILLED_LORA_PATH = os.environ.get(
+    "DISTILLED_LORA_PATH",
+    str(MODELS_ROOT / "loras" / "ltx-2.3-22b-distilled-lora-384.safetensors"),
+)
+UPSAMPLER_PATH = os.environ.get(
+    "UPSAMPLER_PATH",
+    str(MODELS_ROOT / "latent_upscale_models" / "ltx-2.3-spatial-upscaler-x2-1.0.safetensors"),
+)
+GEMMA_ROOT = os.environ.get(
+    "GEMMA_ROOT",
+    str(MODELS_ROOT / "text_encoders" / "gemma-3-12b-it"),
+)
+OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/tmp/ltx_output"))
+WORKER_VERSION = "direct-pipeline-v1"
 
-REQUEST_TIMEOUT_SEC = int(os.environ.get("REQUEST_TIMEOUT_SEC", "1800"))
-POLL_INTERVAL_SEC = float(os.environ.get("POLL_INTERVAL_SEC", "2.5"))
-RETURN_BASE64 = os.environ.get("RETURN_BASE64", "true").lower() == "true"
-WORKER_VERSION = os.environ.get("WORKER_VERSION", "volume-workflow-v2-vhs")
+# ── Load Pipeline Once ──────────────────────────────────────
 
+print(f"Worker version: {WORKER_VERSION}")
+print(f"Loading pipeline...")
+print(f"  Checkpoint:     {CHECKPOINT_PATH}")
+print(f"  Distilled LoRA: {DISTILLED_LORA_PATH}")
+print(f"  Upsampler:      {UPSAMPLER_PATH}")
+print(f"  Gemma root:     {GEMMA_ROOT}")
 
-def describe_dir(path: Path, max_entries: int = 20) -> dict[str, Any]:
-    info: dict[str, Any] = {
-        "path": str(path),
-        "exists": path.exists(),
-        "is_dir": path.is_dir(),
-    }
-    if path.exists() and path.is_dir():
-        try:
-            entries = sorted(child.name for child in path.iterdir())
-            info["entries"] = entries[:max_entries]
-            info["entry_count"] = len(entries)
-        except Exception as exc:  # noqa: BLE001
-            info["list_error"] = str(exc)
-    return info
+load_start = time.time()
 
+from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
+from ltx_core.components.guiders import MultiModalGuiderParams
+from ltx_core.model.video_vae import TilingConfig, get_video_chunks_number
+from ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline
+from ltx_pipelines.utils.media_io import encode_video
 
-def collect_filesystem_debug() -> dict[str, Any]:
-    paths = [
-        Path("/runpod-volume"),
-        VOLUME_WORKFLOW_DIR,
-        WORKFLOW_DIR,
-        COMFY_INPUT_DIR,
-        COMFY_OUTPUT_DIR,
-        Path("/runpod-volume/ComfyUI"),
-        Path("/runpod-volume/ComfyUI/models"),
-        Path("/runpod-volume/ComfyUI/models/checkpoints"),
-        Path("/runpod-volume/ComfyUI/models/text_encoders"),
-        Path("/runpod-volume/ComfyUI/models/latent_upscale_models"),
-    ]
-    return {str(path): describe_dir(path) for path in paths}
-
-
-def collect_mount_debug() -> dict[str, Any]:
-    mount_lines: list[str] = []
-    mount_file = Path("/proc/mounts")
-    if mount_file.exists():
-        try:
-            with mount_file.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    lowered = line.lower()
-                    if any(token in lowered for token in ("runpod", "workspace", "nfs", "fuse")):
-                        mount_lines.append(line.strip())
-        except Exception as exc:  # noqa: BLE001
-            mount_lines.append(f"error reading /proc/mounts: {exc}")
-    else:
-        mount_lines.append("/proc/mounts missing")
-    return {
-        "comfy_input_dir": str(COMFY_INPUT_DIR),
-        "comfy_output_dir": str(COMFY_OUTPUT_DIR),
-        "volume_workflow_dir": str(VOLUME_WORKFLOW_DIR),
-        "workflow_dir": str(WORKFLOW_DIR),
-        "mounts": mount_lines[:50],
-    }
-
-
-def wait_for_comfyui(timeout_sec: int = 300) -> None:
-    deadline = time.time() + timeout_sec
-    last_error = None
-
-    while time.time() < deadline:
-        try:
-            response = requests.get(f"{COMFY_URL}/system_stats", timeout=5)
-            if response.ok:
-                print("ComfyUI is ready")
-                return
-        except Exception as exc:  # noqa: BLE001
-            last_error = exc
-        time.sleep(2)
-
-    raise RuntimeError(f"ComfyUI did not become ready in {timeout_sec}s: {last_error}")
-
-
-def load_workflow(mode: str) -> tuple[dict[str, Any], str]:
-    filename = T2V_WORKFLOW_NAME if mode == "t2v" else I2V_WORKFLOW_NAME
-    candidates = [
-        VOLUME_WORKFLOW_DIR / filename,
-        WORKFLOW_DIR / filename,
-    ]
-
-    print(
-        "Workflow candidates: "
-        + ", ".join(f"{path} exists={path.exists()}" for path in candidates)
+try:
+    from ltx_pipelines.utils.args import ImageConditioningInput
+except ImportError:
+    from collections import namedtuple
+    ImageConditioningInput = namedtuple(
+        "ImageConditioningInput", ["path", "frame_idx", "strength", "crf"]
     )
 
-    for path in candidates:
-        if path.exists():
-            with path.open("r", encoding="utf-8") as fh:
-                return json.load(fh), str(path)
+distilled_lora = [
+    LoraPathStrengthAndSDOps(
+        DISTILLED_LORA_PATH,
+        0.5,
+        LTXV_LORA_COMFY_RENAMING_MAP,
+    ),
+]
 
-    raise FileNotFoundError(
-        f"Workflow file not found in any expected location: {', '.join(str(path) for path in candidates)}"
-    )
+PIPELINE = TI2VidTwoStagesPipeline(
+    checkpoint_path=CHECKPOINT_PATH,
+    distilled_lora=distilled_lora,
+    spatial_upsampler_path=UPSAMPLER_PATH,
+    gemma_root=GEMMA_ROOT,
+    loras=[],
+)
+
+load_elapsed = time.time() - load_start
+print(f"Pipeline loaded in {load_elapsed:.1f}s")
+
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def write_temp_image_from_input(image_input: str) -> str:
-    """Save input image to ComfyUI's input directory and return just the filename."""
-    COMFY_INPUT_DIR.mkdir(parents=True, exist_ok=True)
-    filename = f"input_{int(time.time())}_{os.getpid()}.png"
-    save_path = COMFY_INPUT_DIR / filename
-
-    try:
-        if image_input.startswith("http://") or image_input.startswith("https://"):
-            response = requests.get(image_input, timeout=30)
-            response.raise_for_status()
-            image = Image.open(io.BytesIO(response.content)).convert("RGB")
-        else:
-            payload = image_input.split(",", 1)[1] if "," in image_input else image_input
-            image = Image.open(io.BytesIO(base64.b64decode(payload))).convert("RGB")
-
-        image.save(str(save_path))
-        return filename  # ComfyUI LoadImage expects just the filename
-    except Exception:
-        if save_path.exists():
-            save_path.unlink()
-        raise
-
+# ── Helpers ─────────────────────────────────────────────────
 
 def clamp_dimensions(width: int, height: int) -> tuple[int, int]:
-    return max(64, (width // 64) * 64), max(64, (height // 64) * 64)
+    return max(64, (width // 32) * 32), max(64, (height // 32) * 32)
 
 
 def clamp_num_frames(num_frames: int) -> int:
     return max(9, ((num_frames - 1) // 8) * 8 + 1)
 
 
-def build_template_values(job_input: dict[str, Any]) -> dict[str, str]:
+def save_input_image(image_input: str) -> str:
+    """Decode base64 or download URL image, save to temp file, return path."""
+    if image_input.startswith("http://") or image_input.startswith("https://"):
+        import requests
+        response = requests.get(image_input, timeout=30)
+        response.raise_for_status()
+        image = Image.open(io.BytesIO(response.content)).convert("RGB")
+    else:
+        payload = image_input.split(",", 1)[1] if "," in image_input else image_input
+        image = Image.open(io.BytesIO(base64.b64decode(payload))).convert("RGB")
+
+    tmp_path = os.path.join(tempfile.gettempdir(), f"input_{int(time.time())}_{os.getpid()}.png")
+    image.save(tmp_path)
+    return tmp_path
+
+
+# ── Handler ─────────────────────────────────────────────────
+
+@torch.inference_mode()
+def handler(job: dict[str, Any]) -> dict[str, Any]:
+    job_input = job.get("input", {})
     mode = job_input.get("mode", "t2v").lower()
+
+    if mode not in {"t2v", "i2v"}:
+        return {"error": f"Invalid mode '{mode}'. Supported: t2v, i2v"}
+
+    # Parse inputs
+    prompt = job_input.get("prompt", "").strip()
+    if not prompt:
+        return {"error": "Missing required input: prompt"}
+
+    negative_prompt = job_input.get("negative_prompt", "").strip()
     width = int(job_input.get("width", 768))
     height = int(job_input.get("height", 1344))
     width, height = clamp_dimensions(width, height)
@@ -168,259 +136,93 @@ def build_template_values(job_input: dict[str, Any]) -> dict[str, str]:
     num_frames = int(job_input.get("num_frames", round(duration_seconds * fps)))
     num_frames = clamp_num_frames(num_frames)
 
-    prompt = job_input.get("prompt", "").strip()
-    if not prompt:
-      raise ValueError("Missing required input: prompt")
-
-    negative_prompt = job_input.get("negative_prompt", "").strip()
     seed = int(job_input.get("seed", 42))
     cfg = float(job_input.get("cfg", 3.0))
-    filename_prefix = job_input.get("filename_prefix", f"ltx23_{mode}")
 
-    fps_value = str(int(fps)) if fps.is_integer() else str(fps)
-
-    values = {
-        "PROMPT": prompt,
-        "NEGATIVE_PROMPT": negative_prompt,
-        "WIDTH": str(width),
-        "HEIGHT": str(height),
-        "NUM_FRAMES": str(num_frames),
-        "FPS": fps_value,
-        "SEED": str(seed),
-        "CFG": str(cfg),
-        "FILENAME_PREFIX": filename_prefix,
-    }
-
-    image_input = job_input.get("image")
+    # Handle i2v image
+    images = []
+    input_image_path = None
     if mode == "i2v":
+        image_input = job_input.get("image")
         if not image_input:
-            raise ValueError("Missing required input: image for i2v mode")
-        image_path = write_temp_image_from_input(image_input)
-        values["IMAGE_PATH"] = image_path
+            return {"error": "Missing required input: image for i2v mode"}
+        input_image_path = save_input_image(image_input)
+        images = [ImageConditioningInput(
+            path=input_image_path,
+            frame_idx=0,
+            strength=1.0,
+            crf=18,
+        )]
 
-    return values
+    print(f"Generating {mode}: {width}x{height}, {num_frames} frames, seed={seed}, cfg={cfg}")
+    gen_start = time.time()
 
-
-def render_template(value: Any, replacements: dict[str, str]) -> Any:
-    if isinstance(value, dict):
-        return {key: render_template(inner, replacements) for key, inner in value.items()}
-    if isinstance(value, list):
-        return [render_template(item, replacements) for item in value]
-    if isinstance(value, str):
-        placeholder_key = None
-        if value.startswith("{{") and value.endswith("}}"):
-            candidate = value[2:-2].strip()
-            if candidate in replacements:
-                placeholder_key = candidate
-
-        rendered = value
-        for key, replacement in replacements.items():
-            rendered = rendered.replace(f"{{{{{key}}}}}", replacement)
-
-        lowered = rendered.lower()
-        if lowered in {"true", "false"}:
-            return lowered == "true"
-
-        # Only coerce strings to numbers when the original value was a pure placeholder token.
-        # This preserves ComfyUI node reference ids like "72" as strings.
-        if placeholder_key is None:
-            return rendered
-
-        try:
-            if rendered.isdigit() or (rendered.startswith("-") and rendered[1:].isdigit()):
-                return int(rendered)
-            return float(rendered) if "." in rendered else rendered
-        except ValueError:
-            return rendered
-    return value
-
-
-def queue_prompt(prompt: dict[str, Any]) -> str:
-    response = requests.post(
-        f"{COMFY_URL}/prompt",
-        json={"prompt": prompt},
-        timeout=30,
-    )
-    if not response.ok:
-        try:
-            error_payload = response.json()
-        except Exception:  # noqa: BLE001
-            error_payload = response.text
-        raise RuntimeError(f"ComfyUI /prompt error: {error_payload}")
-    data = response.json()
-    prompt_id = data.get("prompt_id")
-    if not prompt_id:
-        raise RuntimeError(f"ComfyUI did not return prompt_id: {data}")
-    return prompt_id
-
-
-def fetch_object_info(node_class: str | None = None) -> dict[str, Any]:
-    response = requests.get(f"{COMFY_URL}/object_info", timeout=30)
-    response.raise_for_status()
-    payload = response.json()
-    if node_class:
-        return {node_class: payload.get(node_class)}
-    return payload
-
-
-def build_rendered_prompt(job_input: dict[str, Any]) -> tuple[dict[str, Any], str, dict[str, str]]:
-    mode = job_input.get("mode", "t2v").lower()
-    workflow, workflow_path = load_workflow(mode)
-    replacements = build_template_values(job_input)
-    prompt = render_template(copy.deepcopy(workflow), replacements)
-    return prompt, workflow_path, replacements
-
-
-def wait_for_history(prompt_id: str) -> dict[str, Any]:
-    deadline = time.time() + REQUEST_TIMEOUT_SEC
-    last_payload = None
-
-    while time.time() < deadline:
-        response = requests.get(f"{COMFY_URL}/history/{prompt_id}", timeout=30)
-        response.raise_for_status()
-        payload = response.json()
-        last_payload = payload
-
-        if prompt_id in payload:
-            result = payload[prompt_id]
-            status = result.get("status", {})
-            if status.get("status_str") == "error":
-                raise RuntimeError(f"ComfyUI generation failed: {json.dumps(result, ensure_ascii=True)[:2000]}")
-            outputs = result.get("outputs")
-            if outputs:
-                return result
-
-        time.sleep(POLL_INTERVAL_SEC)
-
-    raise TimeoutError(f"Timed out waiting for prompt {prompt_id}. Last payload: {str(last_payload)[:2000]}")
-
-
-def extract_video_file(history: dict[str, Any]) -> tuple[str, str]:
-    outputs = history.get("outputs", {})
-    for _, node_output in outputs.items():
-        gifs = node_output.get("gifs") or []
-        if gifs:
-            item = gifs[0]
-            filename = item["filename"]
-            subfolder = item.get("subfolder", "")
-            return filename, subfolder
-
-        videos = node_output.get("videos") or []
-        if videos:
-            item = videos[0]
-            filename = item["filename"]
-            subfolder = item.get("subfolder", "")
-            return filename, subfolder
-
-        images = node_output.get("images") or []
-        if images and images[0].get("filename", "").lower().endswith(".mp4"):
-            item = images[0]
-            filename = item["filename"]
-            subfolder = item.get("subfolder", "")
-            return filename, subfolder
-
-    raise RuntimeError(f"No output video found in ComfyUI history: {json.dumps(history, ensure_ascii=True)[:2000]}")
-
-
-def resolve_output_path(filename: str, subfolder: str) -> Path:
-    if subfolder:
-        return COMFY_OUTPUT_DIR / subfolder / filename
-    return COMFY_OUTPUT_DIR / filename
-
-
-def cleanup_temp_inputs(replacements: dict[str, str]) -> None:
-    image_filename = replacements.get("IMAGE_PATH")
-    if image_filename:
-        full_path = COMFY_INPUT_DIR / image_filename
-        if full_path.exists():
-            full_path.unlink()
-
-
-wait_for_comfyui()
-print(f"Worker version: {WORKER_VERSION}")
-print(f"Mount debug: {json.dumps(collect_mount_debug(), ensure_ascii=True)[:4000]}")
-print(f"Filesystem debug: {json.dumps(collect_filesystem_debug(), ensure_ascii=True)[:4000]}")
-
-
-def handler(job: dict[str, Any]) -> dict[str, Any]:
-    job_input = job.get("input", {})
-    mode = job_input.get("mode", "t2v").lower()
-    if mode == "object_info":
-        try:
-            node_class = job_input.get("node_class")
-            return fetch_object_info(node_class)
-        except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)}
-
-    if mode == "filesystem_debug":
-        try:
-            return collect_filesystem_debug()
-        except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)}
-
-    if mode == "rendered_workflow":
-        try:
-            workflow_mode = job_input.get("workflow_mode", "t2v").lower()
-            debug_input = dict(job_input)
-            debug_input["mode"] = workflow_mode
-            prompt, workflow_path, replacements = build_rendered_prompt(debug_input)
-            node_ids = job_input.get("node_ids")
-            if node_ids:
-                filtered = {str(node_id): prompt.get(str(node_id)) for node_id in node_ids}
-                return {
-                    "workflow_path": workflow_path,
-                    "node_ids": [str(node_id) for node_id in node_ids],
-                    "prompt": filtered,
-                    "replacements": replacements,
-                }
-            return {
-                "workflow_path": workflow_path,
-                "prompt": prompt,
-                "replacements": replacements,
-            }
-        except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)}
-
-    if mode not in {"t2v", "i2v"}:
-        return {
-            "error": "Invalid mode. Supported values: t2v, i2v, object_info, rendered_workflow, filesystem_debug"
-        }
-
-    replacements = {}
     try:
-        prompt, workflow_path, replacements = build_rendered_prompt(job_input)
-        print(f"Using workflow path: {workflow_path}")
-        print(f"Rendered node 72: {json.dumps(prompt.get('72'), ensure_ascii=True)[:2000]}")
-        print(f"Rendered node 73: {json.dumps(prompt.get('73'), ensure_ascii=True)[:2000]}")
-        print(f"Rendered node 80: {json.dumps(prompt.get('80'), ensure_ascii=True)[:2000]}")
-        print(f"Rendered node 81: {json.dumps(prompt.get('81'), ensure_ascii=True)[:2000]}")
+        video_guider = MultiModalGuiderParams(
+            cfg_scale=cfg,
+            stg_scale=0.0,
+            rescale_scale=0.7,
+            modality_scale=3.0,
+            stg_blocks=[],
+        )
+        audio_guider = MultiModalGuiderParams(
+            cfg_scale=cfg,
+            stg_scale=0.0,
+            rescale_scale=0.7,
+            modality_scale=3.0,
+            stg_blocks=[],
+        )
+        tiling = TilingConfig.default()
 
-        prompt_id = queue_prompt(prompt)
-        history = wait_for_history(prompt_id)
-        filename, subfolder = extract_video_file(history)
-        output_path = resolve_output_path(filename, subfolder)
+        video, audio = PIPELINE(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            seed=seed,
+            height=height,
+            width=width,
+            num_frames=num_frames,
+            frame_rate=fps,
+            num_inference_steps=30,
+            video_guider_params=video_guider,
+            audio_guider_params=audio_guider,
+            images=images,
+            tiling_config=tiling,
+        )
 
-        if not output_path.exists():
-            raise FileNotFoundError(f"Expected ComfyUI output missing: {output_path}")
+        # Encode to MP4
+        output_path = str(OUTPUT_DIR / f"ltx23_{mode}_{int(time.time())}.mp4")
+        video_chunks = get_video_chunks_number(num_frames, tiling)
+        encode_video(
+            video=video,
+            fps=fps,
+            audio=audio,
+            output_path=output_path,
+            video_chunks_number=video_chunks,
+        )
+
+        gen_elapsed = time.time() - gen_start
+        print(f"Generation complete in {gen_elapsed:.1f}s → {output_path}")
+
+        # Read and encode to base64
+        with open(output_path, "rb") as f:
+            video_base64 = base64.b64encode(f.read()).decode("utf-8")
+
+        # Cleanup
+        os.remove(output_path)
 
         response = {
-            "prompt_id": prompt_id,
             "mode": mode,
-            "duration_seconds": int(replacements["NUM_FRAMES"]) / float(replacements["FPS"]),
-            "file_name": filename,
-            "subfolder": subfolder,
-            "output_path": str(output_path),
+            "video_base64": video_base64,
+            "duration_seconds": num_frames / fps,
+            "generation_time_seconds": round(gen_elapsed, 1),
         }
-
-        if RETURN_BASE64:
-            video_bytes = output_path.read_bytes()
-            response["video_base64"] = base64.b64encode(video_bytes).decode("utf-8")
-
         return response
-    except Exception as exc:  # noqa: BLE001
+
+    except Exception as exc:
         return {"error": str(exc)}
     finally:
-        cleanup_temp_inputs(replacements)
+        if input_image_path and os.path.exists(input_image_path):
+            os.remove(input_image_path)
 
 
 runpod.serverless.start({"handler": handler})
