@@ -138,6 +138,7 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
 
     seed = int(job_input.get("seed", 42))
     cfg = float(job_input.get("cfg", 3.0))
+    skip_audio = bool(job_input.get("skip_audio", False))
 
     # Handle i2v image
     images = []
@@ -195,7 +196,7 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         encode_video(
             video=video,
             fps=fps,
-            audio=audio,
+            audio=None if skip_audio else audio,
             output_path=output_path,
             video_chunks_number=video_chunks,
         )
