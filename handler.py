@@ -19,7 +19,6 @@ from PIL import Image
 # ── Configuration ───────────────────────────────────────────
 
 MODELS_ROOT = Path(os.environ.get("MODELS_ROOT", "/runpod-volume/ComfyUI/models"))
-USE_FP8 = os.environ.get("USE_FP8", "false").lower() == "true"
 CHECKPOINT_PATH = os.environ.get(
     "CHECKPOINT_PATH",
     str(MODELS_ROOT / "checkpoints" / "ltx-2.3-22b-dev.safetensors"),
@@ -37,7 +36,7 @@ GEMMA_ROOT = os.environ.get(
     str(MODELS_ROOT / "text_encoders" / "gemma-3-12b-it"),
 )
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/tmp/ltx_output"))
-WORKER_VERSION = "direct-pipeline-v1-fp8" if USE_FP8 else "direct-pipeline-v1"
+WORKER_VERSION = "direct-pipeline-v1"
 
 # ── Load Pipeline Once ──────────────────────────────────────
 
@@ -53,7 +52,6 @@ load_start = time.time()
 from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
 from ltx_core.components.guiders import MultiModalGuiderParams
 from ltx_core.model.video_vae import TilingConfig, get_video_chunks_number
-from ltx_core.quantization import QuantizationPolicy
 from ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline
 from ltx_pipelines.utils.media_io import encode_video
 
@@ -79,7 +77,6 @@ PIPELINE = TI2VidTwoStagesPipeline(
     spatial_upsampler_path=UPSAMPLER_PATH,
     gemma_root=GEMMA_ROOT,
     loras=[],
-    quantization=QuantizationPolicy.fp8_cast() if USE_FP8 else None,
 )
 
 load_elapsed = time.time() - load_start
