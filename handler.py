@@ -19,9 +19,11 @@ from PIL import Image
 # ── Configuration ───────────────────────────────────────────
 
 MODELS_ROOT = Path(os.environ.get("MODELS_ROOT", "/runpod-volume/ComfyUI/models"))
+USE_FP8 = os.environ.get("USE_FP8", "false").lower() == "true"
+_default_ckpt = "ltx-2.3-fp8/ltx-2.3-22b-dev-fp8.safetensors" if USE_FP8 else "ltx-2.3-22b-dev.safetensors"
 CHECKPOINT_PATH = os.environ.get(
     "CHECKPOINT_PATH",
-    str(MODELS_ROOT / "checkpoints" / "ltx-2.3-22b-dev.safetensors"),
+    str(MODELS_ROOT / "checkpoints" / _default_ckpt),
 )
 DISTILLED_LORA_PATH = os.environ.get(
     "DISTILLED_LORA_PATH",
@@ -36,7 +38,7 @@ GEMMA_ROOT = os.environ.get(
     str(MODELS_ROOT / "text_encoders" / "gemma-3-12b-it"),
 )
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/tmp/ltx_output"))
-WORKER_VERSION = "direct-pipeline-v1"
+WORKER_VERSION = "direct-pipeline-v1-fp8" if USE_FP8 else "direct-pipeline-v1"
 
 # ── Load Pipeline Once ──────────────────────────────────────
 
