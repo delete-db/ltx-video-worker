@@ -126,7 +126,10 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
     if not prompt:
         return {"error": "Missing required input: prompt"}
 
-    negative_prompt = job_input.get("negative_prompt", "").strip()
+    default_neg = "morphing, face warp, object duplication, flicker, jittery motion, extra limbs, text artifacts, watermark, blurry, low quality"
+    negative_prompt = job_input.get("negative_prompt", default_neg).strip()
+    if not negative_prompt:
+        negative_prompt = default_neg
     width = int(job_input.get("width", 768))
     height = int(job_input.get("height", 1344))
     width, height = clamp_dimensions(width, height)
@@ -159,19 +162,23 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
     gen_start = time.time()
 
     try:
+        # STG (Spatio-Temporal Guidance) prevents morphing and keeps objects stable
+        stg_scale = float(job_input.get("stg_scale", 1.0))
+        num_steps = int(job_input.get("num_inference_steps", 40))
+
         video_guider = MultiModalGuiderParams(
             cfg_scale=cfg,
-            stg_scale=0.0,
+            stg_scale=stg_scale,
             rescale_scale=0.7,
             modality_scale=3.0,
-            stg_blocks=[],
+            stg_blocks=[28],
         )
         audio_guider = MultiModalGuiderParams(
             cfg_scale=cfg,
-            stg_scale=0.0,
+            stg_scale=stg_scale,
             rescale_scale=0.7,
             modality_scale=3.0,
-            stg_blocks=[],
+            stg_blocks=[28],
         )
         tiling = TilingConfig.default()
 
@@ -183,7 +190,7 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
             width=width,
             num_frames=num_frames,
             frame_rate=fps,
-            num_inference_steps=30,
+            num_inference_steps=num_steps,
             video_guider_params=video_guider,
             audio_guider_params=audio_guider,
             images=images,
