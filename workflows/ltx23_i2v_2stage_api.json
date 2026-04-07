@@ -6,17 +6,16 @@
     }
   },
   "2": {
-    "class_type": "LTXVGemmaCLIPModelLoader",
+    "class_type": "LTXAVTextEncoderLoader",
     "inputs": {
-      "gemma_path": "gemma_3_12B_it_fp4_mixed.safetensors",
-      "ltxv_path": "ltx-2.3-22b-dev.safetensors",
-      "max_length": 1024
+      "text_encoder": "gemma_3_12B_it_fp4_mixed.safetensors",
+      "ckpt_name": "ltx-2.3-22b-dev.safetensors"
     }
   },
   "3": {
     "class_type": "LatentUpscaleModelLoader",
     "inputs": {
-      "model_name": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+      "model_name": "ltx-2.3-spatial-upscaler-x2-1.0.safetensors"
     }
   },
   "4": {
@@ -81,12 +80,12 @@
     }
   },
   "33": {
-    "class_type": "LTXVImgToVideoConditionOnly",
+    "class_type": "LTXVImgToVideoInplace",
     "inputs": {
-      "latent": ["30", 0],
-      "image": ["6", 0],
       "vae": ["1", 2],
-      "strength": 0.7,
+      "image": ["6", 0],
+      "latent": ["30", 0],
+      "strength": 1.0,
       "bypass": false
     }
   },
@@ -149,12 +148,12 @@
     }
   },
   "53": {
-    "class_type": "LTXVImgToVideoConditionOnly",
+    "class_type": "LTXVImgToVideoInplace",
     "inputs": {
-      "latent": ["51", 0],
-      "image": ["6", 0],
       "vae": ["1", 2],
-      "strength": 1.0,
+      "image": ["6", 0],
+      "latent": ["51", 0],
+      "strength": 0.7,
       "bypass": false
     }
   },
@@ -165,12 +164,20 @@
       "audio_latent": ["50", 1]
     }
   },
+  "55": {
+    "class_type": "LTXVCropGuides",
+    "inputs": {
+      "positive": ["20", 0],
+      "negative": ["20", 1],
+      "latent": ["52", 0]
+    }
+  },
   "60": {
     "class_type": "CFGGuider",
     "inputs": {
       "model": ["4", 0],
-      "positive": ["20", 0],
-      "negative": ["20", 1],
+      "positive": ["55", 0],
+      "negative": ["55", 1],
       "cfg": 1.0
     }
   },
@@ -209,17 +216,14 @@
     }
   },
   "71": {
-    "class_type": "LTXVSpatioTemporalTiledVAEDecode",
+    "class_type": "VAEDecodeTiled",
     "inputs": {
+      "samples": ["70", 0],
       "vae": ["1", 2],
-      "latents": ["70", 0],
-      "spatial_tiles": 2,
-      "spatial_overlap": 4,
-      "temporal_tile_length": 64,
-      "temporal_overlap": 8,
-      "last_frame_fix": true,
-      "working_device": "auto",
-      "working_dtype": "auto"
+      "tile_size": 768,
+      "overlap": 64,
+      "temporal_size": 4096,
+      "temporal_overlap": 4
     }
   },
   "72": {
