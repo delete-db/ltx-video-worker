@@ -33,8 +33,8 @@ RUN git clone https://github.com/Lightricks/LTX-2.git /tmp/LTX-2 \
     && python -m pip install -e /tmp/LTX-2/packages/ltx-core \
     && python -m pip install -e /tmp/LTX-2/packages/ltx-pipelines
 
-# RunPod + utilities
-RUN python -m pip install runpod requests Pillow
+# RunPod + utilities (pin transformers — 5.x breaks Gemma3TextConfig)
+RUN python -m pip install runpod requests Pillow transformers==4.52.0
 
 COPY handler.py /app/handler.py
 
