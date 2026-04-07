@@ -20,10 +20,9 @@ from PIL import Image
 
 MODELS_ROOT = Path(os.environ.get("MODELS_ROOT", "/runpod-volume/ComfyUI/models"))
 USE_FP8 = os.environ.get("USE_FP8", "false").lower() == "true"
-_default_ckpt = "ltx-2.3-fp8/ltx-2.3-22b-dev-fp8.safetensors" if USE_FP8 else "ltx-2.3-22b-dev.safetensors"
 CHECKPOINT_PATH = os.environ.get(
     "CHECKPOINT_PATH",
-    str(MODELS_ROOT / "checkpoints" / _default_ckpt),
+    str(MODELS_ROOT / "checkpoints" / "ltx-2.3-22b-dev.safetensors"),
 )
 DISTILLED_LORA_PATH = os.environ.get(
     "DISTILLED_LORA_PATH",
@@ -54,6 +53,7 @@ load_start = time.time()
 from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
 from ltx_core.components.guiders import MultiModalGuiderParams
 from ltx_core.model.video_vae import TilingConfig, get_video_chunks_number
+from ltx_core.quantization import QuantizationPolicy
 from ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline
 from ltx_pipelines.utils.media_io import encode_video
 
@@ -79,6 +79,7 @@ PIPELINE = TI2VidTwoStagesPipeline(
     spatial_upsampler_path=UPSAMPLER_PATH,
     gemma_root=GEMMA_ROOT,
     loras=[],
+    quantization=QuantizationPolicy.fp8_cast() if USE_FP8 else None,
 )
 
 load_elapsed = time.time() - load_start
