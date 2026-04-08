@@ -154,8 +154,8 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         images = [ImageConditioningInput(
             path=input_image_path,
             frame_idx=0,
-            strength=0.7,   # Allow natural motion while anchoring to image
-            crf=33,          # Match training data preprocessing (model trained on video frames)
+            strength=1.0,   # Full anchoring — prevents scene drift
+            crf=23,          # Light compression to match video frame training data (official: 19)
         )]
 
     print(f"Generating {mode}: {width}x{height}, {num_frames} frames, seed={seed}, cfg={cfg}")
