@@ -154,30 +154,30 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
         images = [ImageConditioningInput(
             path=input_image_path,
             frame_idx=0,
-            strength=1.0,
-            crf=18,
+            strength=0.7,   # Allow natural motion while anchoring to image
+            crf=33,          # Match training data preprocessing (model trained on video frames)
         )]
 
     print(f"Generating {mode}: {width}x{height}, {num_frames} frames, seed={seed}, cfg={cfg}")
     gen_start = time.time()
 
     try:
-        # Revert to working config — STG disabled for distilled LoRA blend
+        # Official LTX-2.3 params — STG enabled for Stage 1 only (Stage 2 uses SimpleDenoiser)
         num_steps = int(job_input.get("num_inference_steps", 30))
 
         video_guider = MultiModalGuiderParams(
             cfg_scale=cfg,
-            stg_scale=0.0,
+            stg_scale=1.0,
             rescale_scale=0.7,
             modality_scale=3.0,
-            stg_blocks=[],
+            stg_blocks=[28],
         )
         audio_guider = MultiModalGuiderParams(
-            cfg_scale=cfg,
-            stg_scale=0.0,
+            cfg_scale=7.0,
+            stg_scale=1.0,
             rescale_scale=0.7,
             modality_scale=3.0,
-            stg_blocks=[],
+            stg_blocks=[28],
         )
         tiling = TilingConfig.default()
 
