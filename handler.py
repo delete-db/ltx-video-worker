@@ -162,23 +162,22 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
     gen_start = time.time()
 
     try:
-        # STG (Spatio-Temporal Guidance) prevents morphing and keeps objects stable
-        stg_scale = float(job_input.get("stg_scale", 1.0))
-        num_steps = int(job_input.get("num_inference_steps", 40))
+        # Revert to working config — STG disabled for distilled LoRA blend
+        num_steps = int(job_input.get("num_inference_steps", 30))
 
         video_guider = MultiModalGuiderParams(
             cfg_scale=cfg,
-            stg_scale=stg_scale,
+            stg_scale=0.0,
             rescale_scale=0.7,
             modality_scale=3.0,
-            stg_blocks=[28],
+            stg_blocks=[],
         )
         audio_guider = MultiModalGuiderParams(
             cfg_scale=cfg,
-            stg_scale=stg_scale,
+            stg_scale=0.0,
             rescale_scale=0.7,
             modality_scale=3.0,
-            stg_blocks=[28],
+            stg_blocks=[],
         )
         tiling = TilingConfig.default()
 
